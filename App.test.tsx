@@ -43,6 +43,8 @@ test("navigation reaches rank, calendar, history, downloads, login, settings and
   await app.waitFor("离线下载保存在本机临时目录（已完成可离线播放）");
   await app.press("我的 / 登录");
   await app.waitFor("生成登录二维码");
+  await app.press("短信登录");
+  await app.waitFor("发送验证码");
   await app.press("设置");
   await app.waitFor("播完自动连播下一集");
   await app.press("浅色 >> nth=0");

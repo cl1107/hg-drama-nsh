@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { parseSearchResponse } = require('./discover.cjs');
-const { storeCookies, cookieHeaderFor, getAccountStatus, logoutAccount } = require('./auth.cjs');
+const { storeCookies, cookieHeaderFor, getAccountStatus, logoutAccount, mixEncode, normalizeMobile } = require('./auth.cjs');
 
 test('parseSearchResponse preserves large integer IDs and deduplicates entries', () => {
   const result = parseSearchResponse({
@@ -35,4 +35,12 @@ test('auth cookie jar scopes cookies by domain and clears on logout', () => {
   assert.equal(cookieHeaderFor('https://hongguoduanju.com/'), '');
   logoutAccount();
   assert.equal(cookieHeaderFor('https://sso.douyin.com/'), '');
+});
+
+test('auth mixEncode and normalizeMobile encode phone numbers cleanly', () => {
+  assert.equal(normalizeMobile('13800138000'), '+8613800138000');
+  assert.equal(normalizeMobile(' +86 138-0013-8000 '), '+8613800138000');
+  assert.throws(() => normalizeMobile('12345'));
+  // '+86' -> 0x2b^5=2e, 0x38^5=3d, 0x36^5=33
+  assert.equal(mixEncode('+86'), '2e3d33');
 });

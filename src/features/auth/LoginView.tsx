@@ -1,4 +1,5 @@
 import { signal, View, Text, Image, cleanup } from "nsh";
+import { Input } from "nsh/base";
 import { Button, FilterChip } from "../../ui/controls";
 import { serviceGet, servicePost } from "../../service-client";
 import { loadUserData } from "../../stores/user-data";
@@ -30,7 +31,19 @@ export function LoginView() {
   const status = signal<"idle" | "loading" | "waiting" | "scanned" | "expired" | "cancelled" | "error">("idle");
   const qrSrc = signal("");
   const message = signal("");
+
+  // SMS state
+  const mobile = signal("");
+  const smsCode = signal("");
+  const captchaText = signal("");
+  const captchaImg = signal("");
+  const smsBusy = signal(false);
+  const smsError = signal("");
+  const smsNotice = signal("");
+  const countdown = signal(0);
+
   let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let countdownTimer: ReturnType<typeof setInterval> | undefined;
   let generation = 0;
 
   const stopPolling = () => {
@@ -41,7 +54,31 @@ export function LoginView() {
     }
   };
 
-  cleanup(stopPolling);
+  const stopCountdown = () => {
+    if (countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = undefined;
+    }
+  };
+
+  cleanup(() => {
+    stopPolling();
+    stopCountdown();
+  });
+
+  const startCountdown = (seconds: number) => {
+    stopCountdown();
+    countdown.set(seconds);
+    countdownTimer = setInterval(() => {
+      const next = countdown() - 1;
+      if (next <= 0) {
+        countdown.set(0);
+        stopCountdown();
+      } else {
+        countdown.set(next);
+      }
+    }, 1000);
+  };
 
   const startQr = async () => {
     stopPolling();
@@ -89,8 +126,73 @@ export function LoginView() {
     }
   };
 
+  const sendCode = async () => {
+    if (smsBusy() || countdown() > 0) return;
+    smsBusy.set(true);
+    smsError.set("");
+    smsNotice.set("");
+    try {
+      const res = await servicePost<{ sent: boolean; retryAfter?: number; captcha?: string; message?: string }>(
+        "/auth/sms/send",
+        {
+          mobile: mobile().trim(),
+          ...(captchaText().trim() ? { captcha: captchaText().trim() } : {}),
+        },
+      );
+      if (res.sent) {
+        captchaImg.set("");
+        captchaText.set("");
+        smsNotice.set("验证码已发送，请注意查收短信");
+        startCountdown(res.retryAfter && res.retryAfter > 0 ? res.retryAfter : 60);
+      } else if (res.captcha) {
+        const img = res.captcha.startsWith("data:") ? res.captcha : `data:image/png;base64,${res.captcha}`;
+        captchaImg.set(img);
+        smsError.set(res.message || "请输入图形验证码后重试");
+      }
+    } catch (e) {
+      smsError.set(e instanceof Error ? e.message : "发送验证码失败");
+    } finally {
+      smsBusy.set(false);
+    }
+  };
+
+  const submitSmsLogin = async () => {
+    if (smsBusy()) return;
+    smsBusy.set(true);
+    smsError.set("");
+    try {
+      const res = await servicePost<{ loggedIn: boolean; user?: AccountUser; captcha?: string; message?: string }>(
+        "/auth/sms/login",
+        {
+          mobile: mobile().trim(),
+          code: smsCode().trim(),
+          ...(captchaText().trim() ? { captcha: captchaText().trim() } : {}),
+        },
+      );
+      if (res.loggedIn && res.user) {
+        stopCountdown();
+        currentAccount.set(res.user);
+        await loadUserData(`user:${res.user.userId}`);
+        mobile.set("");
+        smsCode.set("");
+        captchaImg.set("");
+        captchaText.set("");
+        smsNotice.set("");
+      } else if (res.captcha) {
+        const img = res.captcha.startsWith("data:") ? res.captcha : `data:image/png;base64,${res.captcha}`;
+        captchaImg.set(img);
+        smsError.set(res.message || "请输入图形验证码");
+      }
+    } catch (e) {
+      smsError.set(e instanceof Error ? e.message : "短信登录失败");
+    } finally {
+      smsBusy.set(false);
+    }
+  };
+
   const logout = async () => {
     stopPolling();
+    stopCountdown();
     try {
       await servicePost("/auth/logout", {});
     } catch {
@@ -115,7 +217,7 @@ export function LoginView() {
                 </If>
                 <Text class="text-lg font-semibold text-foreground">{u.nickname}</Text>
                 <Text class="text-xs text-muted-foreground">账号 ID：{u.userId}</Text>
-                <Text class="text-xs text-muted-foreground">当前为内存会话，应用重启后需重新扫码验证</Text>
+                <Text class="text-xs text-muted-foreground">当前为内存会话，应用重启后需重新登录验证</Text>
                 <Button label="退出登录" variant="destructive" onPress={() => void logout()} />
               </View>
             );
@@ -142,8 +244,57 @@ export function LoginView() {
             </View>
 
             <If when={mode() === "sms"}>
-              <View class="items-center gap-2 py-6">
-                <Text class="text-sm text-muted-foreground">短信登录接口契约待补全，请使用官方 App 扫码登录</Text>
+              <View class="w-full gap-3">
+                <Input
+                  class="bg-background border border-input rounded-lg px-3.5 py-2.5 text-sm text-foreground"
+                  value={mobile()}
+                  onChange={({ value }) => mobile.set(value)}
+                  placeholder="请输入手机号（如 13800138000）"
+                />
+                <View class="flex-row gap-2 items-center">
+                  <Input
+                    class="flex-1 bg-background border border-input rounded-lg px-3.5 py-2.5 text-sm text-foreground"
+                    value={smsCode()}
+                    onChange={({ value }) => smsCode.set(value)}
+                    placeholder="短信验证码"
+                  />
+                  <Button
+                    label={countdown() > 0 ? `${countdown()}s 后重发` : "发送验证码"}
+                    variant="outline"
+                    size="sm"
+                    disabled={smsBusy() || countdown() > 0}
+                    onPress={() => void sendCode()}
+                  />
+                </View>
+
+                <If when={!!captchaImg()}>
+                  <View class="gap-2 items-center">
+                    <Image src={captchaImg()} style={{ width: 140, height: 48, borderRadius: 6 }} />
+                    <Input
+                      class="w-full bg-background border border-input rounded-lg px-3.5 py-2 text-sm text-foreground"
+                      value={captchaText()}
+                      onChange={({ value }) => captchaText.set(value)}
+                      placeholder="请输入图形验证码"
+                    />
+                  </View>
+                </If>
+
+                <If when={!!smsNotice()}>
+                  <Text class="text-xs text-primary">{smsNotice()}</Text>
+                </If>
+                <If when={!!smsError()}>
+                  <Text class="text-xs text-destructive">{smsError()}</Text>
+                </If>
+
+                <Button
+                  label={smsBusy() ? "登录中…" : "登录"}
+                  variant="primary"
+                  disabled={smsBusy()}
+                  onPress={() => void submitSmsLogin()}
+                />
+                <Text class="text-xs text-muted-foreground text-center">
+                  仅限内存会话，不读取原客户端秘密，不写入本地明文存储
+                </Text>
               </View>
             </If>
 

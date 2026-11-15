@@ -6,7 +6,7 @@ const path = require('node:path');
 const { prepare, details } = require('./playback.cjs');
 const { parseRange } = require('./range.cjs');
 const { searchDramas } = require('./discover.cjs');
-const { createQrLogin, pollQrLogin, getAccountStatus, logoutAccount } = require('./auth.cjs');
+const { createQrLogin, pollQrLogin, sendSmsCode, smsLogin, getAccountStatus, logoutAccount } = require('./auth.cjs');
 const { listDownloads, startDownload, cancelDownload, deleteDownload, readDownloadedMedia } = require('./downloads.cjs');
 
 const ALLOWED_QUALITIES = new Set(['auto', '1080p', '720p', '540p', '480p', '360p']);
@@ -142,6 +142,10 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
         json(res, 200, await createQrLogin(controller.signal));
       } else if (url.pathname === '/auth/poll') {
         json(res, 200, await pollQrLogin(input.token, controller.signal));
+      } else if (url.pathname === '/auth/sms/send') {
+        json(res, 200, await sendSmsCode({ mobile: input.mobile, captcha: input.captcha }, controller.signal));
+      } else if (url.pathname === '/auth/sms/login') {
+        json(res, 200, await smsLogin({ mobile: input.mobile, code: input.code, captcha: input.captcha }, controller.signal));
       } else if (url.pathname === '/auth/logout') {
         json(res, 200, logoutAccount());
       } else if (url.pathname === '/downloads/start') {
