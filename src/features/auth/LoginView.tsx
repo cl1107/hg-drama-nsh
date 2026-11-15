@@ -11,10 +11,19 @@ export interface AccountUser {
 }
 
 export const currentAccount = signal<AccountUser | null>(null);
+export const sessionPersistent = signal(false);
+export const sessionPendingVerification = signal(false);
 
 export async function refreshAccountStatus(): Promise<void> {
   try {
-    const res = await serviceGet<{ loggedIn: boolean; user?: AccountUser }>("/auth/status");
+    const res = await serviceGet<{
+      loggedIn: boolean;
+      user?: AccountUser;
+      persistent?: boolean;
+      pendingVerification?: boolean;
+    }>("/auth/status");
+    sessionPersistent.set(Boolean(res.persistent));
+    sessionPendingVerification.set(Boolean(res.pendingVerification));
     if (res.loggedIn && res.user) {
       currentAccount.set(res.user);
       await loadUserData(`user:${res.user.userId}`);
@@ -217,7 +226,13 @@ export function LoginView() {
                 </If>
                 <Text class="text-lg font-semibold text-foreground">{u.nickname}</Text>
                 <Text class="text-xs text-muted-foreground">账号 ID：{u.userId}</Text>
-                <Text class="text-xs text-muted-foreground">当前为内存会话，应用重启后需重新登录验证</Text>
+                <Text class="text-xs text-muted-foreground">
+                  {sessionPendingVerification()
+                    ? "当前为待验证会话，联网后将自动核验"
+                    : sessionPersistent()
+                      ? "会话已安全保存于系统钥匙串，重启自动恢复"
+                      : "当前为内存会话，应用重启后需重新登录验证"}
+                </Text>
                 <Button label="退出登录" variant="destructive" onPress={() => void logout()} />
               </View>
             );
@@ -293,7 +308,7 @@ export function LoginView() {
                   onPress={() => void submitSmsLogin()}
                 />
                 <Text class="text-xs text-muted-foreground text-center">
-                  仅限内存会话，不读取原客户端秘密，不写入本地明文存储
+                  会话仅保存于系统安全钥匙串，不读取原客户端秘密，不写入明文配置
                 </Text>
               </View>
             </If>
@@ -324,7 +339,7 @@ export function LoginView() {
                   <Button label="重试" variant="primary" size="sm" onPress={() => void startQr()} />
                 </If>
                 <Text class="text-xs text-muted-foreground">
-                  仅限内存会话，不读取原客户端秘密，不写入本地明文存储
+                  会话仅保存于系统安全钥匙串，不读取原客户端秘密，不写入明文配置
                 </Text>
               </View>
             </If>

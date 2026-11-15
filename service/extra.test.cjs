@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { parseSearchResponse } = require('./discover.cjs');
-const { storeCookies, cookieHeaderFor, getAccountStatus, logoutAccount, mixEncode, normalizeMobile } = require('./auth.cjs');
+const { storeCookies, cookieHeaderFor, getAccountStatus, logoutAccount, mixEncode, normalizeMobile, restoreSession } = require('./auth.cjs');
 
 test('parseSearchResponse preserves large integer IDs and deduplicates entries', () => {
   const result = parseSearchResponse({
@@ -43,4 +43,20 @@ test('auth mixEncode and normalizeMobile encode phone numbers cleanly', () => {
   assert.throws(() => normalizeMobile('12345'));
   // '+86' -> 0x2b^5=2e, 0x38^5=3d, 0x36^5=33
   assert.equal(mixEncode('+86'), '2e3d33');
+});
+
+test('restoreSession clears malformed keychain payload and logout deletes secret', async () => {
+  let deleted = false;
+  const mockStore = {
+    isAvailable: () => true,
+    readSecret: async () => 'not-json',
+    saveSecret: async () => true,
+    deleteSecret: async () => { deleted = true; return true; },
+  };
+  const status = await restoreSession(undefined, mockStore, true);
+  assert.equal(status.loggedIn, false);
+  assert.equal(deleted, true);
+  deleted = false;
+  await logoutAccount(mockStore);
+  assert.equal(deleted, true);
 });

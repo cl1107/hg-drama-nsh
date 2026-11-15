@@ -1,14 +1,22 @@
 'use strict';
 const { bytes, allowedUrl } = require('./transport.cjs');
+const keychain = require('./keychain.cjs');
+const { getPlaybackDevice } = require('./vendor/hongguo/playback-device');
+const { signedAccountRequest, requestJson, preserveLargeJsonIntegers } = require('./vendor/hongguo/app-source');
 
 const AUTH_DOMAINS = ['hongguoduanju.com', 'douyin.com', 'snssdk.com', 'fqnovel.com'];
 const PASSPORT_HOST = 'https://hongguoduanju.com';
 const WEBSITE_ORIGIN = 'https://hongguoduanju.com';
 const AUTH_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+const KEYCHAIN_SERVICE = 'com.hgdrama.nsh.session';
+const KEYCHAIN_ACCOUNT = 'default';
 
-// In-memory only: never persisted to disk, never returned to TSX or logs.
+// In-memory cookie jar; persisted only to OS Keychain when available.
 const cookieJar = new Map();
 let currentUser = null;
+let pendingVerification = false;
+let restoredOnce = false;
+let restorePromise = null;
 
 function mixEncode(value) {
   const bytesBuf = Buffer.from(String(value), 'utf8');
@@ -59,6 +67,73 @@ function cookieHeaderFor(urlStr) {
     if (host === domain || host.endsWith(`.${domain}`)) pairs.push(`${name}=${value}`);
   }
   return pairs.join('; ');
+}
+
+async function persistSession(store = keychain) {
+  if (!currentUser || !cookieJar.size || !store.isAvailable()) return false;
+  try {
+    const payload = JSON.stringify({
+      user: currentUser,
+      cookies: Array.from(cookieJar.values()),
+    });
+    return await store.saveSecret(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, payload);
+  } catch {
+    return false;
+  }
+}
+
+async function restoreSession(signal, store = keychain, force = false) {
+  if (restoredOnce && !force) return getAccountStatus();
+  if (restorePromise) return restorePromise;
+  restorePromise = (async () => {
+    try {
+      const raw = await store.readSecret(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+      if (!raw) {
+        restoredOnce = true;
+        return getAccountStatus();
+      }
+      const parsed = parseJson(raw);
+      if (!parsed || !Array.isArray(parsed.cookies) || !parsed.user?.userId) {
+        await store.deleteSecret(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+        restoredOnce = true;
+        return getAccountStatus();
+      }
+      cookieJar.clear();
+      for (const item of parsed.cookies) {
+        if (item?.domain && item?.name && typeof item?.value === 'string') {
+          cookieJar.set(`${item.domain}:${item.name}`, {
+            domain: String(item.domain),
+            name: String(item.name),
+            value: item.value,
+          });
+        }
+      }
+      currentUser = {
+        userId: String(parsed.user.userId),
+        nickname: String(parsed.user.nickname || `用户 ${String(parsed.user.userId).slice(-4)}`),
+        avatar: String(parsed.user.avatar || ''),
+      };
+      try {
+        await verifyAccount(signal, store);
+        pendingVerification = false;
+      } catch (error) {
+        if (error?.code === 'AUTH_VERIFY_INVALID' || error?.status === 401) {
+          cookieJar.clear();
+          currentUser = null;
+          pendingVerification = false;
+          await store.deleteSecret(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+        } else {
+          // Network/timeout: keep restored session as pending verification.
+          pendingVerification = true;
+        }
+      }
+      restoredOnce = true;
+      return getAccountStatus();
+    } finally {
+      restorePromise = null;
+    }
+  })();
+  return restorePromise;
 }
 
 async function authRequest(urlStr, signal, options = {}) {
@@ -122,9 +197,10 @@ async function createQrLogin(signal) {
   };
 }
 
-async function verifyAccount(signal) {
+async function verifyAccount(signal, store = keychain) {
   const res = await authRequest(`${PASSPORT_HOST}/passport/account/info/v2/?aid=513755`, signal);
-  if (res.status !== 200) throw Object.assign(new Error(`账号验证失败（HTTP ${res.status}）`), { code: 'AUTH_VERIFY_HTTP' });
+  if (res.status === 401) throw Object.assign(new Error('登录会话已失效'), { code: 'AUTH_VERIFY_INVALID', status: 401 });
+  if (res.status !== 200) throw Object.assign(new Error(`账号验证失败（HTTP ${res.status}）`), { code: 'AUTH_VERIFY_HTTP', status: res.status });
   const body = parseJson(res.text);
   const data = body?.data;
   const userId = data?.user_id_str || (data?.user_id ? String(data.user_id) : '');
@@ -136,6 +212,9 @@ async function verifyAccount(signal) {
     nickname: typeof data.name === 'string' && data.name.trim() ? data.name.trim() : `用户 ${userId.slice(-4)}`,
     avatar: typeof data.avatar_url === 'string' ? data.avatar_url : '',
   };
+  pendingVerification = false;
+  restoredOnce = true;
+  await persistSession(store);
   return currentUser;
 }
 
@@ -241,14 +320,56 @@ async function smsLogin({ mobile, code, captcha = '' } = {}, signal) {
   return { loggedIn: true, user };
 }
 
-function getAccountStatus() {
-  return currentUser ? { loggedIn: true, user: currentUser } : { loggedIn: false };
+async function fetchCloudHistory(signal) {
+  if (!currentUser || !cookieJar.size) {
+    throw Object.assign(new Error('请先登录后再读取云端历史'), { code: 'AUTH_REQUIRED' });
+  }
+  const identity = await getPlaybackDevice(requestJson);
+  const req = signedAccountRequest('/reading/bookapi/read_history/list/v1/', { count: '20', offset: '0' }, identity);
+  const cookie = cookieHeaderFor(req.url) || cookieHeaderFor(WEBSITE_ORIGIN);
+  const res = await bytes(req.url, {
+    domains: AUTH_DOMAINS,
+    headers: {
+      ...req.headers,
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+    signal,
+    timeout: 12000,
+  });
+  if (res.status !== 200) throw Object.assign(new Error(`云端历史请求失败（HTTP ${res.status}）`), { code: 'CLOUD_HISTORY_HTTP' });
+  const normalized = preserveLargeJsonIntegers(res.data.toString('utf8'), ['book_id', 'series_id', 'item_id', 'video_id']);
+  const payload = parseJson(normalized);
+  const list = Array.isArray(payload?.data?.data_list) ? payload.data.data_list : [];
+  const items = [];
+  for (const row of list) {
+    const seriesId = String(row?.series_id || row?.book_id || '').trim();
+    const title = String(row?.series_name || row?.book_name || row?.title || '').trim();
+    if (!/^\d{1,30}$/.test(seriesId) || !title) continue;
+    items.push({
+      seriesId,
+      title,
+      cover: typeof row?.thumb_url === 'string' ? row.thumb_url : typeof row?.series_cover === 'string' ? row.series_cover : '',
+      episodeId: /^\d{1,30}$/.test(String(row?.item_id || row?.video_id || '')) ? String(row.item_id || row.video_id) : '',
+      episodeIndex: Number(row?.episode_index || row?.read_index || 1),
+      totalEpisodes: Number(row?.episode_cnt || row?.serial_count || 0),
+    });
+  }
+  return { items };
 }
 
-function logoutAccount() {
+function getAccountStatus() {
+  return currentUser
+    ? { loggedIn: true, user: currentUser, persistent: keychain.isAvailable(), pendingVerification }
+    : { loggedIn: false, persistent: keychain.isAvailable(), pendingVerification: false };
+}
+
+async function logoutAccount(store = keychain) {
   cookieJar.clear();
   currentUser = null;
-  return { loggedIn: false };
+  pendingVerification = false;
+  restoredOnce = true;
+  await store.deleteSecret(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+  return { loggedIn: false, persistent: store.isAvailable(), pendingVerification: false };
 }
 
 module.exports = {
@@ -256,6 +377,8 @@ module.exports = {
   pollQrLogin,
   sendSmsCode,
   smsLogin,
+  fetchCloudHistory,
+  restoreSession,
   getAccountStatus,
   logoutAccount,
   storeCookies,

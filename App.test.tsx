@@ -39,6 +39,8 @@ test("navigation reaches rank, calendar, history, downloads, login, settings and
   await app.waitFor("当前展示官网公开剧集与本地预约状态（云端上新日历接口待补全）");
   await app.press("历史/收藏/点赞");
   await app.waitFor("暂无本地观看历史");
+  await app.press("云端历史");
+  await app.waitFor("请先在“我的 / 登录”中登录账号后再查看云端历史");
   await app.press("下载");
   await app.waitFor("离线下载保存在本机临时目录（已完成可离线播放）");
   await app.press("我的 / 登录");

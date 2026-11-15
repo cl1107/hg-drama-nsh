@@ -6,7 +6,7 @@ const path = require('node:path');
 const { prepare, details } = require('./playback.cjs');
 const { parseRange } = require('./range.cjs');
 const { searchDramas } = require('./discover.cjs');
-const { createQrLogin, pollQrLogin, sendSmsCode, smsLogin, getAccountStatus, logoutAccount } = require('./auth.cjs');
+const { createQrLogin, pollQrLogin, sendSmsCode, smsLogin, fetchCloudHistory, restoreSession, getAccountStatus, logoutAccount } = require('./auth.cjs');
 const { listDownloads, startDownload, cancelDownload, deleteDownload, readDownloadedMedia } = require('./downloads.cjs');
 
 const ALLOWED_QUALITIES = new Set(['auto', '1080p', '720p', '540p', '480p', '360p']);
@@ -81,7 +81,20 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
     }
 
     if (req.method === 'GET' && url.pathname === '/auth/status') {
-      json(res, 200, getAccountStatus());
+      try {
+        json(res, 200, await restoreSession());
+      } catch {
+        json(res, 200, getAccountStatus());
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/auth/cloud-history') {
+      try {
+        json(res, 200, await fetchCloudHistory());
+      } catch (error) {
+        const status = error.code === 'AUTH_REQUIRED' ? 401 : 502;
+        json(res, status, { code: error.code || 'CLOUD_HISTORY_ERROR', message: error.message });
+      }
       return;
     }
     if (req.method === 'GET' && url.pathname === '/downloads') {
@@ -147,7 +160,7 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
       } else if (url.pathname === '/auth/sms/login') {
         json(res, 200, await smsLogin({ mobile: input.mobile, code: input.code, captcha: input.captcha }, controller.signal));
       } else if (url.pathname === '/auth/logout') {
-        json(res, 200, logoutAccount());
+        json(res, 200, await logoutAccount());
       } else if (url.pathname === '/downloads/start') {
         const quality = typeof input.quality === 'string' && ALLOWED_QUALITIES.has(input.quality) ? input.quality : 'auto';
         json(res, 200, startDownload({ seriesId: input.seriesId, episodeId: input.episodeId, quality }));
