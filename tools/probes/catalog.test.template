@@ -1,0 +1,7 @@
+import { expect, open, test } from "nsh/test";
+test("official homepage loads through the NSH live network stack", async () => {
+ const app = await open("../App.tsx", { network: "live" });
+ await app.press("加载官网目录");
+ await app.waitFor("热播短剧", { timeout: 20000 });
+ expect(app.texts()).toContain("热播短剧");
+});

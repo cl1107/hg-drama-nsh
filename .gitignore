@@ -1,0 +1,7 @@
+.tools/
+.research/
+.tmp/
+.nsh/
+node_modules/
+target/
+.DS_Store

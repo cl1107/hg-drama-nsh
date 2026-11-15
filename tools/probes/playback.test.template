@@ -1,0 +1,9 @@
+import { expect, open, test } from "nsh/test";
+test("real official source is decrypted and handed to the app player with matching episodes", async () => {
+ const app = await open("../tools/probes/PlaybackFlow.tsx", { width:1280,height:820,network:"live" });
+ await app.press("播放验证短剧");
+ await app.waitFor("宴律，你的白月光回国了 · 第1集", {timeout:120000});
+ await app.scroll("id:episode-list", 5000);
+ await app.waitFor("第76集");
+ expect(app.texts()).toContain("第76集");
+},150000);

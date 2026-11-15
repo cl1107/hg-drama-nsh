@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+node service/server.cjs &
+SERVICE_PID=$!
+trap 'kill "$SERVICE_PID" 2>/dev/null || true' EXIT HUP INT TERM
+count=0
+until [ "$(cat .tmp/service-ready 2>/dev/null || true)" = "$SERVICE_PID" ]; do
+ if ! kill -0 "$SERVICE_PID" 2>/dev/null; then exit 1; fi
+ count=$((count + 1))
+ if [ "$count" -ge 50 ]; then echo '播放服务启动超时' >&2; exit 1; fi
+ sleep 0.1
+done
+./tools/nsh run --target macos --name 红果短剧-NSH --window-size 1480x820

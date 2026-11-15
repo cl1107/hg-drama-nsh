@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+TASK_ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+mkdir -p "$TASK_ROOT/.tmp"
+if [ ! -f "$TASK_ROOT/.tmp/service-config.ts" ]; then
+  echo 'export const serviceConfig = { baseUrl: "", token: "" };' > "$TASK_ROOT/.tmp/service-config.ts"
+fi
+if [ ! -f "$TASK_ROOT/.tmp/prepared-playback.ts" ]; then
+  echo 'export const preparedPlayback = { title: "尚未准备验证媒体", mediaUrl: "" };' > "$TASK_ROOT/.tmp/prepared-playback.ts"
+fi
+exec "$TASK_ROOT/.tools/nsh/bin/nsh" "$@"

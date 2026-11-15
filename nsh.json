@@ -1,0 +1,47 @@
+{
+  "name": "红果短剧",
+  "id": "com.hgdrama.nsh",
+  "version": "0.1.0",
+  "build": 1,
+  "appearance": "dark",
+  "theme": {
+    "cssVars": {
+      "light": {
+        "background": "#fafafa",
+        "foreground": "#18181b",
+        "sidebar": "#f4f4f5",
+        "card": "#ffffff",
+        "card-foreground": "#18181b",
+        "primary": "#e82958",
+        "primary-foreground": "#ffffff",
+        "muted": "#e4e4e7",
+        "muted-foreground": "#71717a",
+        "destructive": "#dc2626",
+        "destructive-foreground": "#ffffff",
+        "border": "#dedee3",
+        "input": "#dedee3",
+        "ring": "#e82958",
+        "selection": "#fde8ee",
+        "rating": "#d97706"
+      },
+      "dark": {
+        "background": "#0e0e12",
+        "foreground": "#f1f1f4",
+        "sidebar": "#16161c",
+        "card": "#1e1e26",
+        "card-foreground": "#f1f1f4",
+        "primary": "#ff3b68",
+        "primary-foreground": "#ffffff",
+        "muted": "#282830",
+        "muted-foreground": "#92929e",
+        "destructive": "#ef4444",
+        "destructive-foreground": "#ffffff",
+        "border": "#30303b",
+        "input": "#30303b",
+        "ring": "#ff3b68",
+        "selection": "#3a1d29",
+        "rating": "#f6c647"
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+import { expect, open, test } from "nsh/test";
+test("live fetch preserves manual redirect and separate HttpOnly cookies", async () => {
+ const app = await open("../tools/probes/Network.tsx", { network: "live" });
+ await app.press("运行网络探针");
+ await app.waitFor('text:{"status":302,"location":"/final","cookies":["first=one; Path=/; HttpOnly","second=two; Path=/; HttpOnly"]}');
+ expect(app.texts()).toContain('{"status":302,"location":"/final","cookies":["first=one; Path=/; HttpOnly","second=two; Path=/; HttpOnly"]}');
+});

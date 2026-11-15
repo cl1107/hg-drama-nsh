@@ -1,0 +1,11 @@
+{
+  "run": [
+    {
+      "name": "红果短剧",
+      "commands": [
+        "./tools/dev"
+      ],
+      "default": true
+    }
+  ]
+}
