@@ -51,14 +51,14 @@ export function LoginView() {
   const smsNotice = signal("");
   const countdown = signal(0);
 
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let countdownTimer: ReturnType<typeof setInterval> | undefined;
   let generation = 0;
 
   const stopPolling = () => {
     generation += 1;
     if (pollTimer) {
-      clearInterval(pollTimer);
+      clearTimeout(pollTimer);
       pollTimer = undefined;
     }
   };
@@ -102,32 +102,41 @@ export function LoginView() {
       const img = raw.startsWith("data:") || raw.startsWith("https://") ? raw : raw ? `data:image/png;base64,${raw}` : "";
       qrSrc.set(img);
       status.set("waiting");
-      pollTimer = setInterval(async () => {
+      const schedulePoll = () => {
         if (gen !== generation) return;
-        try {
-          const poll = await servicePost<{ status: string; user?: AccountUser }>("/auth/poll", { token: res.token });
+        pollTimer = setTimeout(async () => {
           if (gen !== generation) return;
-          if (poll.status === "scanned") {
-            status.set("scanned");
-          } else if (poll.status === "expired") {
+          try {
+            const poll = await servicePost<{ status: string; user?: AccountUser }>("/auth/poll", { token: res.token });
+            if (gen !== generation) return;
+            if (poll.status === "scanned") {
+              status.set("scanned");
+              schedulePoll();
+            } else if (poll.status === "expired") {
+              stopPolling();
+              status.set("expired");
+            } else if (poll.status === "cancelled") {
+              stopPolling();
+              status.set("cancelled");
+            } else if (poll.status === "confirmed" && poll.user) {
+              stopPolling();
+              currentAccount.set(poll.user);
+              sessionPersistent.set(true);
+              sessionPendingVerification.set(false);
+              await loadUserData(`user:${poll.user.userId}`);
+              status.set("idle");
+            } else {
+              schedulePoll();
+            }
+          } catch (e) {
+            if (gen !== generation) return;
             stopPolling();
-            status.set("expired");
-          } else if (poll.status === "cancelled") {
-            stopPolling();
-            status.set("cancelled");
-          } else if (poll.status === "confirmed" && poll.user) {
-            stopPolling();
-            currentAccount.set(poll.user);
-            await loadUserData(`user:${poll.user.userId}`);
-            status.set("idle");
+            status.set("error");
+            message.set(e instanceof Error ? e.message : "扫码状态检查失败");
           }
-        } catch (e) {
-          if (gen !== generation) return;
-          stopPolling();
-          status.set("error");
-          message.set(e instanceof Error ? e.message : "扫码状态检查失败");
-        }
-      }, 2000);
+        }, 2000);
+      };
+      schedulePoll();
     } catch (e) {
       if (gen !== generation) return;
       status.set("error");

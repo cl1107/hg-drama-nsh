@@ -7,12 +7,22 @@ const { signedAccountRequest, requestJson, preserveLargeJsonIntegers } = require
 const AUTH_DOMAINS = ['hongguoduanju.com', 'douyin.com', 'snssdk.com', 'fqnovel.com'];
 const PASSPORT_HOST = 'https://hongguoduanju.com';
 const WEBSITE_ORIGIN = 'https://hongguoduanju.com';
-const AUTH_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+const AUTH_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+const WEB_QUERY = {
+  aid: '513755',
+  passport_jssdk_version: '3.4.10',
+  passport_jssdk_type: 'normal',
+  account_sdk_source: 'web',
+  is_from_ttaccountsdk: '1',
+  language: 'zh',
+};
 const KEYCHAIN_SERVICE = 'com.hgdrama.nsh.session';
 const KEYCHAIN_ACCOUNT = 'default';
 
 // In-memory cookie jar; persisted only to OS Keychain when available.
 const cookieJar = new Map();
+const qrJars = new Map();
+const activePolls = new Map();
 let currentUser = null;
 let pendingVerification = false;
 let restoredOnce = false;
@@ -34,7 +44,7 @@ function normalizeMobile(mobile) {
   throw Object.assign(new Error('请输入有效的手机号'), { code: 'INVALID_REQUEST' });
 }
 
-function storeCookies(headers, requestUrl) {
+function storeCookies(headers, requestUrl, jar = cookieJar) {
   const setCookie = headers?.['set-cookie'];
   if (!setCookie) return;
   const list = Array.isArray(setCookie) ? setCookie : [setCookie];
@@ -55,18 +65,25 @@ function storeCookies(headers, requestUrl) {
       if (k === 'max-age' && /^-?\d+$/.test(v)) maxAge = Number(v);
     }
     const key = `${domain}:${name}`;
-    if (maxAge !== null && maxAge <= 0) cookieJar.delete(key);
-    else cookieJar.set(key, { domain, name, value });
+    if (maxAge !== null && maxAge <= 0) jar.delete(key);
+    else jar.set(key, { domain, name, value });
   }
 }
 
-function cookieHeaderFor(urlStr) {
+function cookieHeaderFor(urlStr, jar = cookieJar) {
   const host = new URL(urlStr).hostname.toLowerCase();
   const pairs = [];
-  for (const { domain, name, value } of cookieJar.values()) {
+  for (const { domain, name, value } of jar.values()) {
     if (host === domain || host.endsWith(`.${domain}`)) pairs.push(`${name}=${value}`);
   }
   return pairs.join('; ');
+}
+
+function jarHasSession(jar = cookieJar) {
+  for (const { name, value } of jar.values()) {
+    if ((name === 'sessionid' || name === 'sessionid_ss') && value) return true;
+  }
+  return false;
 }
 
 async function persistSession(store = keychain) {
@@ -137,15 +154,17 @@ async function restoreSession(signal, store = keychain, force = false) {
 }
 
 async function authRequest(urlStr, signal, options = {}) {
+  const jar = options.jar || cookieJar;
   let current = allowedUrl(urlStr, AUTH_DOMAINS).href;
   let method = options.method || 'GET';
   let data = options.data;
   for (let hop = 0; hop < 6; hop += 1) {
-    const cookie = cookieHeaderFor(current);
+    const cookie = cookieHeaderFor(current, jar);
     const headers = {
       'User-Agent': AUTH_UA,
-      Accept: 'application/json, text/plain, */*',
+      Accept: 'application/json, text/javascript',
       Referer: `${WEBSITE_ORIGIN}/`,
+      Origin: WEBSITE_ORIGIN,
       ...(options.contentType && data !== undefined ? { 'Content-Type': options.contentType } : {}),
       ...(cookie ? { Cookie: cookie } : {}),
     };
@@ -157,7 +176,7 @@ async function authRequest(urlStr, signal, options = {}) {
       signal,
       timeout: 12000,
     });
-    storeCookies(res.headers, current);
+    storeCookies(res.headers, current, jar);
     if ([301, 302, 303, 307, 308].includes(res.status)) {
       const location = res.headers?.location;
       if (!location) throw Object.assign(new Error('登录跳转缺少目标地址'), { code: 'AUTH_REDIRECT' });
@@ -176,19 +195,20 @@ function parseJson(text) {
 }
 
 async function createQrLogin(signal) {
+  const jar = new Map();
   const params = new URLSearchParams({
-    service: WEBSITE_ORIGIN,
-    next: WEBSITE_ORIGIN,
-    aid: '513755',
-    passport_jssdk_version: '3.4.10',
+    ...WEB_QUERY,
+    next: `${WEBSITE_ORIGIN}/`,
   });
-  const res = await authRequest(`${PASSPORT_HOST}/passport/web/get_qrcode/?${params.toString()}`, signal);
+  const res = await authRequest(`${PASSPORT_HOST}/passport/web/get_qrcode/?${params.toString()}`, signal, { jar });
   if (res.status !== 200) throw Object.assign(new Error(`获取二维码失败（HTTP ${res.status}）`), { code: 'AUTH_QR_HTTP' });
   const body = parseJson(res.text);
   const data = body?.data;
   if (!data || typeof data.token !== 'string' || !data.token) {
     throw Object.assign(new Error(data?.description || body?.message || '未能获取登录二维码'), { code: 'AUTH_QR_FAILED' });
   }
+  qrJars.clear();
+  qrJars.set(data.token, jar);
   return {
     token: data.token,
     qrcode: typeof data.qrcode === 'string' ? data.qrcode : '',
@@ -197,8 +217,9 @@ async function createQrLogin(signal) {
   };
 }
 
-async function verifyAccount(signal, store = keychain) {
-  const res = await authRequest(`${PASSPORT_HOST}/passport/account/info/v2/?aid=513755`, signal);
+async function verifyAccount(signal, store = keychain, jar = cookieJar) {
+  const params = new URLSearchParams(WEB_QUERY);
+  const res = await authRequest(`${PASSPORT_HOST}/passport/account/info/v2/?${params.toString()}`, signal, { jar });
   if (res.status === 401) throw Object.assign(new Error('登录会话已失效'), { code: 'AUTH_VERIFY_INVALID', status: 401 });
   if (res.status !== 200) throw Object.assign(new Error(`账号验证失败（HTTP ${res.status}）`), { code: 'AUTH_VERIFY_HTTP', status: res.status });
   const body = parseJson(res.text);
@@ -206,6 +227,10 @@ async function verifyAccount(signal, store = keychain) {
   const userId = data?.user_id_str || (data?.user_id ? String(data.user_id) : '');
   if (!userId || !/^\d{1,30}$/.test(userId)) {
     throw Object.assign(new Error('未能确认账号身份'), { code: 'AUTH_VERIFY_INVALID' });
+  }
+  if (jar !== cookieJar) {
+    cookieJar.clear();
+    for (const [k, v] of jar.entries()) cookieJar.set(k, v);
   }
   currentUser = {
     userId,
@@ -222,29 +247,45 @@ async function pollQrLogin(token, signal) {
   if (typeof token !== 'string' || !token.trim()) {
     throw Object.assign(new Error('二维码令牌无效'), { code: 'INVALID_REQUEST' });
   }
-  const params = new URLSearchParams({
-    token: token.trim(),
-    service: WEBSITE_ORIGIN,
-    next: WEBSITE_ORIGIN,
-    aid: '513755',
-    passport_jssdk_version: '3.4.10',
-  });
-  const res = await authRequest(`${PASSPORT_HOST}/passport/web/check_qrconnect/?${params.toString()}`, signal);
-  if (res.status !== 200) throw Object.assign(new Error(`扫码状态检查失败（HTTP ${res.status}）`), { code: 'AUTH_POLL_HTTP' });
-  const body = parseJson(res.text);
-  const status = String(body?.data?.status || '');
-  if (status === '1' || status === 'new') return { status: 'waiting' };
-  if (status === '2' || status === 'scanned') return { status: 'scanned' };
-  if (status === '4' || status === 'expired') return { status: 'expired' };
-  if (status === '5' || status === 'refused' || status === 'cancelled') return { status: 'cancelled' };
-  if (status === '3' || status === 'confirmed') {
-    if (typeof body?.data?.redirect_url === 'string' && body.data.redirect_url) {
-      await authRequest(body.data.redirect_url, signal);
+  const cleanToken = token.trim();
+  if (activePolls.has(cleanToken)) return activePolls.get(cleanToken);
+
+  const run = (async () => {
+    const jar = qrJars.get(cleanToken) || new Map();
+    qrJars.set(cleanToken, jar);
+    const params = new URLSearchParams({
+      ...WEB_QUERY,
+      token: cleanToken,
+      next: `${WEBSITE_ORIGIN}/`,
+    });
+    const res = await authRequest(`${PASSPORT_HOST}/passport/web/check_qrconnect/?${params.toString()}`, signal, { jar });
+    if (res.status !== 200) throw Object.assign(new Error(`扫码状态检查失败（HTTP ${res.status}）`), { code: 'AUTH_POLL_HTTP' });
+    const body = parseJson(res.text);
+    const status = String(body?.data?.status || '');
+    if (status === '5' || status === 'expired') {
+      qrJars.delete(cleanToken);
+      return { status: 'expired' };
     }
-    const user = await verifyAccount(signal);
+    if (status === '2' || status === 'scanned') return { status: 'scanned' };
+    if (status !== '3' && status !== 'confirmed') return { status: 'waiting' };
+
+    if (typeof body?.data?.redirect_url === 'string' && body.data.redirect_url) {
+      await authRequest(body.data.redirect_url, signal, { jar });
+    }
+    if (!jarHasSession(jar)) {
+      return { status: 'waiting' };
+    }
+    const user = await verifyAccount(signal, keychain, jar);
+    qrJars.delete(cleanToken);
     return { status: 'confirmed', user };
+  })();
+
+  activePolls.set(cleanToken, run);
+  try {
+    return await run;
+  } finally {
+    activePolls.delete(cleanToken);
   }
-  return { status: 'waiting' };
 }
 
 async function sendSmsCode({ mobile, captcha = '' } = {}, signal) {
@@ -255,8 +296,9 @@ async function sendSmsCode({ mobile, captcha = '' } = {}, signal) {
     mix_mode: '1',
     ...(typeof captcha === 'string' && captcha.trim() ? { captcha: captcha.trim() } : {}),
   });
+  const params = new URLSearchParams(WEB_QUERY);
   const res = await authRequest(
-    `${PASSPORT_HOST}/passport/web/send_code/?aid=513755&account_sdk_source=web&passport_jssdk_version=3.4.10`,
+    `${PASSPORT_HOST}/passport/web/send_code/?${params.toString()}`,
     signal,
     {
       method: 'POST',
@@ -276,7 +318,11 @@ async function sendSmsCode({ mobile, captcha = '' } = {}, signal) {
       message: body?.data?.description || '请输入图形验证码',
     };
   }
-  throw Object.assign(new Error(body?.data?.description || '发送验证码失败'), { code: 'AUTH_SMS_SEND_FAILED' });
+  const desc = body?.data?.description || '发送验证码失败';
+  if (/滑块/.test(desc) || body?.data?.verify_center_decision_conf) {
+    throw Object.assign(new Error('官网短信接口触发了滑块风控（滑动滑块进行验证），请使用上方“扫码登录”'), { code: 'AUTH_SMS_SLIDER' });
+  }
+  throw Object.assign(new Error(desc), { code: 'AUTH_SMS_SEND_FAILED' });
 }
 
 async function smsLogin({ mobile, code, captcha = '' } = {}, signal) {
@@ -289,11 +335,12 @@ async function smsLogin({ mobile, code, captcha = '' } = {}, signal) {
     mobile: mixEncode(normalized),
     code: mixEncode(cleanCode),
     mix_mode: '1',
-    next: WEBSITE_ORIGIN,
+    next: `${WEBSITE_ORIGIN}/`,
     ...(typeof captcha === 'string' && captcha.trim() ? { captcha: captcha.trim() } : {}),
   });
+  const params = new URLSearchParams(WEB_QUERY);
   const res = await authRequest(
-    `${PASSPORT_HOST}/passport/web/sms_login/?aid=513755&account_sdk_source=web&passport_jssdk_version=3.4.10`,
+    `${PASSPORT_HOST}/passport/web/sms_login/?${params.toString()}`,
     signal,
     {
       method: 'POST',
@@ -311,7 +358,11 @@ async function smsLogin({ mobile, code, captcha = '' } = {}, signal) {
     };
   }
   if (body?.message !== 'success') {
-    throw Object.assign(new Error(body?.data?.description || '短信登录失败'), { code: 'AUTH_SMS_LOGIN_FAILED' });
+    const desc = body?.data?.description || '短信登录失败';
+    if (/滑块/.test(desc) || body?.data?.verify_center_decision_conf) {
+      throw Object.assign(new Error('官网短信接口触发了滑块风控，请使用上方“扫码登录”'), { code: 'AUTH_SMS_SLIDER' });
+    }
+    throw Object.assign(new Error(desc), { code: 'AUTH_SMS_LOGIN_FAILED' });
   }
   if (typeof body?.data?.redirect_url === 'string' && body.data.redirect_url) {
     await authRequest(body.data.redirect_url, signal);
@@ -325,7 +376,15 @@ async function fetchCloudHistory(signal) {
     throw Object.assign(new Error('请先登录后再读取云端历史'), { code: 'AUTH_REQUIRED' });
   }
   const identity = await getPlaybackDevice(requestJson);
-  const req = signedAccountRequest('/reading/bookapi/read_history/list/v1/', { count: '20', offset: '0' }, identity);
+  const req = signedAccountRequest('/reading/bookapi/read_history/list/v1/', {
+    book_type: '2',
+    limit: '0',
+    offset: '0',
+    last_min_read_timestamp_ms: '0',
+    full_field: 'true',
+    is_first_load: 'true',
+    query_soft_deleted: 'false',
+  }, identity);
   const cookie = cookieHeaderFor(req.url) || cookieHeaderFor(WEBSITE_ORIGIN);
   const res = await bytes(req.url, {
     domains: AUTH_DOMAINS,
@@ -337,21 +396,23 @@ async function fetchCloudHistory(signal) {
     timeout: 12000,
   });
   if (res.status !== 200) throw Object.assign(new Error(`云端历史请求失败（HTTP ${res.status}）`), { code: 'CLOUD_HISTORY_HTTP' });
-  const normalized = preserveLargeJsonIntegers(res.data.toString('utf8'), ['book_id', 'series_id', 'item_id', 'video_id']);
+  const normalized = preserveLargeJsonIntegers(res.data.toString('utf8'), ['book_id', 'book_id_str', 'series_id', 'item_id', 'vid', 'video_id']);
   const payload = parseJson(normalized);
   const list = Array.isArray(payload?.data?.data_list) ? payload.data.data_list : [];
   const items = [];
   for (const row of list) {
-    const seriesId = String(row?.series_id || row?.book_id || '').trim();
-    const title = String(row?.series_name || row?.book_name || row?.title || '').trim();
+    if (row?.is_delete) continue;
+    const seriesId = String(row?.book_id_str || row?.series_id || row?.book_id || '').trim();
+    const title = String(row?.series_title || row?.book_name || row?.series_name || row?.title || '').trim();
     if (!/^\d{1,30}$/.test(seriesId) || !title) continue;
+    const epId = String(row?.vid || row?.item_id || row?.video_id || '').trim();
     items.push({
       seriesId,
       title,
-      cover: typeof row?.thumb_url === 'string' ? row.thumb_url : typeof row?.series_cover === 'string' ? row.series_cover : '',
-      episodeId: /^\d{1,30}$/.test(String(row?.item_id || row?.video_id || '')) ? String(row.item_id || row.video_id) : '',
-      episodeIndex: Number(row?.episode_index || row?.read_index || 1),
-      totalEpisodes: Number(row?.episode_cnt || row?.serial_count || 0),
+      cover: typeof row?.series_cover_url === 'string' ? row.series_cover_url : typeof row?.thumb_url === 'string' ? row.thumb_url : '',
+      episodeId: /^\d{1,30}$/.test(epId) ? epId : '',
+      episodeIndex: Number(row?.vid_index || row?.episode_index || row?.read_index || 1),
+      totalEpisodes: Number(row?.episode_cnt || row?.episode_count || row?.serial_count || 0),
     });
   }
   return { items };
@@ -365,6 +426,7 @@ function getAccountStatus() {
 
 async function logoutAccount(store = keychain) {
   cookieJar.clear();
+  qrJars.clear();
   currentUser = null;
   pendingVerification = false;
   restoredOnce = true;
