@@ -2,11 +2,11 @@
 
 目标：使用最新稳定版 NSH 的 TSX 模式开发跨平台客户端，先在本机 macOS 验证；界面依据用户截图与 `/Applications/红果短剧.app`，协议和媒体处理参考 `jackotom/hongguo-drama`。
 
-当前已有第一阶段 TSX 实现：官网公开目录加载与筛选、侧栏、深浅色切换和独立 HTTPS 视频播放探针。已新增官方取源、CENC解密、本机媒体服务与原生播放/选集；一部真实短剧第一集已验证。登录与下载管理仍待实施。项目工具固定为 **NSH 0.5.1 (224d9a7)**，全局工具保持不变。
+当前已有第一阶段 TSX 实现：官网公开目录加载与筛选、侧栏、深浅色切换和独立 HTTPS 视频播放探针。已新增官方取源、CENC解密、本机媒体服务与原生播放/选集；一部真实短剧第一集已验证。登录与下载管理仍待实施。项目工具固定为 [**NSH 0.6.0 (5541637)**](https://github.com/longbridge/nsh/releases/tag/v0.6.0)，官方发行档解压至 `.tools/nsh`，由 `./tools/nsh` 调用。
 
 运行（含片源服务，需Node24+）：`./tools/dev`。类型检查/构建：`./tools/nsh check`、`./tools/nsh build`。离线测试：`./tools/nsh test App.test.tsx` 与 `./tools/nsh test tools/probes/runtime.test.tsx`。在线目录验证：`./tools/check-live.sh`。详见 [当前实现与验证记录](docs/evidence/implementation-01.md)。
 
-在 macOS 上运行 `./tools/package-macos` 生成 `红果短剧-NSH.app`。构建需要同架构的官方 Node.js 24+ 发行版和 NSH 0.5.1。应用包包含 Node.js 与本机播放服务，拖入「应用程序」后可直接打开。离线下载保存到 `~/Library/Application Support/com.hgdrama.nsh/downloads`。安装包使用本机临时签名。
+在 macOS 上运行 `./tools/package-macos` 生成 `红果短剧-NSH.app`。构建需要同架构的官方 Node.js 24+ 发行版和项目固定版 NSH。应用包包含 Node.js 与本机播放服务，拖入「应用程序」后可直接打开。离线下载保存到 `~/Library/Application Support/com.hgdrama.nsh/downloads`。安装包使用本机临时签名。
 
 当前播放证据：[真实播放与画面验证](docs/evidence/implementation-02.md)。协议/媒体改编代码按GPL-3.0交付，见 LICENSE 和 service/vendor/README.md。
 

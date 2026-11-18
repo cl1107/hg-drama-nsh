@@ -1,5 +1,11 @@
 # 开发交接
 
+## 2026-11-18 NSH 0.6.0 重打包
+
+项目工具更新为 [NSH 0.6.0 (5541637)](https://github.com/longbridge/nsh/releases/tag/v0.6.0)。官方 macOS arm64 发行档 SHA-256 为 `b2a8370c8b44ca6059d2d8665b48b08472a4fee3956813b99223f4e3ce5491d9`，与 GitHub 发行资产摘要和独立校验文件一致。打包配置补充 0.6.0 要求的 `application` 权限。
+
+check/build 和 11 项 NSH 测试通过。打包器使用发行档内的预构建完整 runner。构建号 2 已替换到 `/Applications/红果短剧-NSH.app`，通过严格签名校验，并确认从已安装的窗口播放真实推荐视频。
+
 ## 2026-11-18 macOS 应用包
 
 新应用图标位于 `assets/app-icon.png`。 `./tools/package-macos` 通过固定版本的 NSH 打包，附带 Node.js 和片源服务。启动器生成一次性的本机连接凭证，应用退出后服务随之结束。离线下载写入用户 Application Support 目录。
