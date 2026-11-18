@@ -11,8 +11,17 @@ function assertSafeId(value, name) {
   }
 }
 
+function isTestProcess() {
+  return Boolean(
+    process.env.NODE_TEST_CONTEXT
+    || process.execArgv.includes('--test')
+    || process.argv.includes('--test')
+    || process.env.HG_DISABLE_KEYCHAIN === '1',
+  );
+}
+
 function isAvailable() {
-  return process.platform === 'darwin';
+  return process.platform === 'darwin' && !isTestProcess();
 }
 
 async function saveSecret(service, account, value) {

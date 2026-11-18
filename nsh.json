@@ -1,5 +1,6 @@
 {
-  "name": "红果短剧",
+  "name": "红果短剧-NSH",
+  "icon": "assets/app-icon.png",
   "id": "com.hgdrama.nsh",
   "version": "0.1.0",
   "build": 1,
@@ -22,7 +23,12 @@
         "input": "#dedee3",
         "ring": "#e82958",
         "selection": "#fde8ee",
-        "rating": "#d97706"
+        "rating": "#d97706",
+        "media-background": "#000000",
+        "media-foreground": "#ffffff",
+        "media-muted": "#c5c5cd",
+        "media-panel": "#17171dc9",
+        "media-scrim": "#00000099"
       },
       "dark": {
         "background": "#0e0e12",
@@ -40,7 +46,12 @@
         "input": "#30303b",
         "ring": "#ff3b68",
         "selection": "#3a1d29",
-        "rating": "#f6c647"
+        "rating": "#f6c647",
+        "media-background": "#000000",
+        "media-foreground": "#ffffff",
+        "media-muted": "#c5c5cd",
+        "media-panel": "#17171dc9",
+        "media-scrim": "#00000099"
       }
     }
   }

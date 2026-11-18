@@ -3,6 +3,7 @@ const { bytes, allowedUrl } = require('./transport.cjs');
 const keychain = require('./keychain.cjs');
 const { getPlaybackDevice } = require('./vendor/hongguo/playback-device');
 const { signedAccountRequest, requestJson, preserveLargeJsonIntegers } = require('./vendor/hongguo/app-source');
+const { catalogCover } = require('./discover.cjs');
 
 const AUTH_DOMAINS = ['hongguoduanju.com', 'douyin.com', 'snssdk.com', 'fqnovel.com'];
 const PASSPORT_HOST = 'https://hongguoduanju.com';
@@ -25,6 +26,7 @@ const qrJars = new Map();
 const activePolls = new Map();
 let currentUser = null;
 let pendingVerification = false;
+let sessionPersisted = false;
 let restoredOnce = false;
 let restorePromise = null;
 
@@ -87,14 +89,21 @@ function jarHasSession(jar = cookieJar) {
 }
 
 async function persistSession(store = keychain) {
-  if (!currentUser || !cookieJar.size || !store.isAvailable()) return false;
+  if (!currentUser || !cookieJar.size || !store.isAvailable()) {
+    sessionPersisted = false;
+    return false;
+  }
   try {
     const payload = JSON.stringify({
       user: currentUser,
       cookies: Array.from(cookieJar.values()),
     });
-    return await store.saveSecret(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, payload);
-  } catch {
+    const ok = await store.saveSecret(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, payload);
+    sessionPersisted = Boolean(ok);
+    return sessionPersisted;
+  } catch (err) {
+    sessionPersisted = false;
+    console.error('[auth] keychain save failed:', err?.message || 'unknown error');
     return false;
   }
 }
@@ -130,19 +139,13 @@ async function restoreSession(signal, store = keychain, force = false) {
         nickname: String(parsed.user.nickname || `用户 ${String(parsed.user.userId).slice(-4)}`),
         avatar: String(parsed.user.avatar || ''),
       };
+      sessionPersisted = true;
       try {
-        await verifyAccount(signal, store);
+        await verifyAccount(signal, store, new Map(cookieJar));
         pendingVerification = false;
-      } catch (error) {
-        if (error?.code === 'AUTH_VERIFY_INVALID' || error?.status === 401) {
-          cookieJar.clear();
-          currentUser = null;
-          pendingVerification = false;
-          await store.deleteSecret(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
-        } else {
-          // Network/timeout: keep restored session as pending verification.
-          pendingVerification = true;
-        }
+      } catch {
+        // Keep a valid Keychain session during startup restore; only malformed JSON or explicit logout deletes it.
+        pendingVerification = true;
       }
       restoredOnce = true;
       return getAccountStatus();
@@ -226,7 +229,8 @@ async function verifyAccount(signal, store = keychain, jar = cookieJar) {
   const data = body?.data;
   const userId = data?.user_id_str || (data?.user_id ? String(data.user_id) : '');
   if (!userId || !/^\d{1,30}$/.test(userId)) {
-    throw Object.assign(new Error('未能确认账号身份'), { code: 'AUTH_VERIFY_INVALID' });
+    const expired = body?.message === 'error' && (data?.error_code === 8 || data?.error_code === 10008);
+    throw Object.assign(new Error('未能确认账号身份'), { code: expired ? 'AUTH_SESSION_EXPIRED' : 'AUTH_VERIFY_INVALID' });
   }
   if (jar !== cookieJar) {
     cookieJar.clear();
@@ -277,7 +281,7 @@ async function pollQrLogin(token, signal) {
     }
     const user = await verifyAccount(signal, keychain, jar);
     qrJars.delete(cleanToken);
-    return { status: 'confirmed', user };
+    return { status: 'confirmed', user, persistent: sessionPersisted };
   })();
 
   activePolls.set(cleanToken, run);
@@ -368,10 +372,11 @@ async function smsLogin({ mobile, code, captcha = '' } = {}, signal) {
     await authRequest(body.data.redirect_url, signal);
   }
   const user = await verifyAccount(signal);
-  return { loggedIn: true, user };
+  return { loggedIn: true, user, persistent: sessionPersisted };
 }
 
 async function fetchCloudHistory(signal) {
+  if (!restoredOnce) await restoreSession(signal).catch(() => {});
   if (!currentUser || !cookieJar.size) {
     throw Object.assign(new Error('请先登录后再读取云端历史'), { code: 'AUTH_REQUIRED' });
   }
@@ -409,7 +414,7 @@ async function fetchCloudHistory(signal) {
     items.push({
       seriesId,
       title,
-      cover: typeof row?.series_cover_url === 'string' ? row.series_cover_url : typeof row?.thumb_url === 'string' ? row.thumb_url : '',
+      cover: catalogCover(typeof row?.series_cover_url === 'string' ? row.series_cover_url : typeof row?.thumb_url === 'string' ? row.thumb_url : ''),
       episodeId: /^\d{1,30}$/.test(epId) ? epId : '',
       episodeIndex: Number(row?.vid_index || row?.episode_index || row?.read_index || 1),
       totalEpisodes: Number(row?.episode_cnt || row?.episode_count || row?.serial_count || 0),
@@ -418,9 +423,91 @@ async function fetchCloudHistory(signal) {
   return { items };
 }
 
+async function fetchCloudBookshelf(signal) {
+  if (!restoredOnce) await restoreSession(signal).catch(() => {});
+  if (!currentUser || !cookieJar.size) {
+    throw Object.assign(new Error('请先登录后再读取云端追更/收藏'), { code: 'AUTH_REQUIRED' });
+  }
+  const identity = await getPlaybackDevice(requestJson);
+  const req = signedAccountRequest('/reading/bookapi/bookshelf/video/list/v', {
+    book_type: '2',
+    limit: '50',
+    offset: '0',
+  }, identity);
+  const cookie = cookieHeaderFor(req.url) || cookieHeaderFor(WEBSITE_ORIGIN);
+  const res = await bytes(req.url, {
+    domains: AUTH_DOMAINS,
+    headers: {
+      ...req.headers,
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+    signal,
+    timeout: 12000,
+  });
+  if (res.status !== 200) {
+    throw Object.assign(new Error(`云端追更列表请求失败（HTTP ${res.status}）`), { code: 'CLOUD_BOOKSHELF_HTTP' });
+  }
+  const normalized = preserveLargeJsonIntegers(res.data.toString('utf8'), ['series_id', 'book_id']);
+  const payload = parseJson(normalized);
+  const shelfRows = Array.isArray(payload?.data?.video_shelf_info) ? payload.data.video_shelf_info : [];
+  const ids = [];
+  const shelfMeta = new Map();
+  for (const row of shelfRows) {
+    const sid = String(row?.series_id || '').trim();
+    if (!/^\d{1,30}$/.test(sid) || shelfMeta.has(sid)) continue;
+    ids.push(sid);
+    shelfMeta.set(sid, {
+      collectTime: Number(row?.collect_time || row?.modify_time || 0),
+    });
+  }
+  if (!ids.length) return { items: [] };
+
+  const detailMap = new Map();
+  for (let i = 0; i < ids.length; i += 20) {
+    const chunk = ids.slice(i, i + 20);
+    const detailReq = signedAccountRequest('/reading/bookapi/multi-detail/v1/', {
+      book_id: chunk.join(','),
+    }, identity);
+    const detailRes = await bytes(detailReq.url, {
+      domains: AUTH_DOMAINS,
+      headers: {
+        ...detailReq.headers,
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+      signal,
+      timeout: 12000,
+    });
+    if (detailRes.status !== 200) continue;
+    const detailNorm = preserveLargeJsonIntegers(detailRes.data.toString('utf8'), ['book_id', 'series_id']);
+    const detailPayload = parseJson(detailNorm);
+    const list = Array.isArray(detailPayload?.data) ? detailPayload.data : [];
+    for (const d of list) {
+      const bid = String(d?.book_id || d?.series_id || '').trim();
+      if (!/^\d{1,30}$/.test(bid)) continue;
+      detailMap.set(bid, d);
+    }
+  }
+
+  const items = [];
+  for (const sid of ids) {
+    const d = detailMap.get(sid);
+    const title = String(d?.book_name || d?.series_name || d?.title || '').trim();
+    if (!title) continue;
+    const epCount = Number(d?.serial_count || d?.episode_cnt || 0);
+    items.push({
+      seriesId: sid,
+      title,
+      cover: catalogCover(typeof d?.thumb_url === 'string' ? d.thumb_url : typeof d?.series_cover === 'string' ? d.series_cover : ''),
+      episodes: Number.isInteger(epCount) && epCount > 0 ? epCount : 0,
+      collectTime: shelfMeta.get(sid)?.collectTime || 0,
+    });
+  }
+  return { items };
+}
+
 function getAccountStatus() {
   return currentUser
-    ? { loggedIn: true, user: currentUser, persistent: keychain.isAvailable(), pendingVerification }
+    ? { loggedIn: true, user: currentUser, persistent: sessionPersisted, pendingVerification }
     : { loggedIn: false, persistent: keychain.isAvailable(), pendingVerification: false };
 }
 
@@ -429,6 +516,7 @@ async function logoutAccount(store = keychain) {
   qrJars.clear();
   currentUser = null;
   pendingVerification = false;
+  sessionPersisted = false;
   restoredOnce = true;
   await store.deleteSecret(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
   return { loggedIn: false, persistent: store.isAvailable(), pendingVerification: false };
@@ -440,6 +528,7 @@ module.exports = {
   sendSmsCode,
   smsLogin,
   fetchCloudHistory,
+  fetchCloudBookshelf,
   restoreSession,
   getAccountStatus,
   logoutAccount,

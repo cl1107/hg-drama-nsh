@@ -1,5 +1,9 @@
 # 片源、内容解密与视频解码
 
+## 当前播放协议
+
+2026-11-18 起，App 正片取源使用 Android v5 签名和 `POST /novel/player/multi_video_model/player/v1`，按 `data["1004"][vid]` 读取精确分集。只有空响应才在原时间预算内尝试备用主机和旧模型接口。来源是 [hongguo-drama v7.5](https://github.com/jackotom/hongguo-drama/releases/tag/v7.5) 与 [hongguoTV 播放修复](https://github.com/N3urda/hongguoTV/pull/60)，代码及向量归属见 [NOTICE](../service/vendor/hongguo/NOTICE)。实测结果见 [开发交接](HANDOFF.md)。
+
 ## 证据与结论
 
 drama 红果主链确有官方域名 API、设备注册、请求签名、媒体 URL 解析、内容密钥派生与 CENC/AES-CTR 解密实现。证明的是代码存在；本轮未执行真实取源和视频播放，不保证服务当前接受全部请求。也没有官方授权 SDK 的证据。

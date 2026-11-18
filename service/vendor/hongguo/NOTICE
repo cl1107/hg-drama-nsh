@@ -2,6 +2,15 @@
 NOTICE —— 来源与修改说明
 =========================
 
+hg-drama-nsh 2026-11-18 播放协议更新
+-----------------------------------
+Android v5 播放请求、playback-v5.js 与合成向量测试移植自
+jackotom/hongguo-drama v7.5，提交 4ffff289d6dd289e589a0fd0e65aa7aa5c2a7567，GPL-3.0。
+其签名和请求实现来自 N3urda/hongguoTV 的 GPL-3.0-only 提交
+18c37c2afd0567520135abcae312352542f09083（Signer.kt、AesV3.kt、V5Constants.kt、
+MobilePlayback.kt），沿用 woshishiq1/drpys 22261adfa31435e3b3ef5a730b8a2a75bcaf1715
+的来源归属。上游合成回归向量为 signing-v5-f13.json 和 signing-v5-carrier.json。
+
 当前源码／发行目标：7.3；实际状态与验收边界见 docs/release-7.3.md。
 
 本软件（红果短剧下载器 / hongguo-downloader）是基于他人开源项目的**修改版本**。

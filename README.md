@@ -6,6 +6,8 @@
 
 运行（含片源服务，需Node24+）：`./tools/dev`。类型检查/构建：`./tools/nsh check`、`./tools/nsh build`。离线测试：`./tools/nsh test App.test.tsx` 与 `./tools/nsh test tools/probes/runtime.test.tsx`。在线目录验证：`./tools/check-live.sh`。详见 [当前实现与验证记录](docs/evidence/implementation-01.md)。
 
+在 macOS 上运行 `./tools/package-macos` 生成 `红果短剧-NSH.app`。构建需要同架构的官方 Node.js 24+ 发行版和 NSH 0.5.1。应用包包含 Node.js 与本机播放服务，拖入「应用程序」后可直接打开。离线下载保存到 `~/Library/Application Support/com.hgdrama.nsh/downloads`。安装包使用本机临时签名。
+
 当前播放证据：[真实播放与画面验证](docs/evidence/implementation-02.md)。协议/媒体改编代码按GPL-3.0交付，见 LICENSE 和 service/vendor/README.md。
 
 ## 从这里开始

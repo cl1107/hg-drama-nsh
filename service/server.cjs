@@ -5,9 +5,9 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { prepare, details } = require('./playback.cjs');
 const { parseRange } = require('./range.cjs');
-const { searchDramas } = require('./discover.cjs');
-const { createQrLogin, pollQrLogin, sendSmsCode, smsLogin, fetchCloudHistory, restoreSession, getAccountStatus, logoutAccount } = require('./auth.cjs');
-const { listDownloads, startDownload, cancelDownload, deleteDownload, readDownloadedMedia } = require('./downloads.cjs');
+const { searchDramas, browseCategory, browseRank } = require('./discover.cjs');
+const { createQrLogin, pollQrLogin, sendSmsCode, smsLogin, fetchCloudHistory, fetchCloudBookshelf, restoreSession, getAccountStatus, logoutAccount } = require('./auth.cjs');
+const { listDownloads, startDownload, retryDownload, cancelDownload, deleteDownload, clearDownloads, readDownloadedMedia } = require('./downloads.cjs');
 
 const ALLOWED_QUALITIES = new Set(['auto', '1080p', '720p', '540p', '480p', '360p']);
 
@@ -97,6 +97,15 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
       }
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/auth/cloud-bookshelf') {
+      try {
+        json(res, 200, await fetchCloudBookshelf());
+      } catch (error) {
+        const status = error.code === 'AUTH_REQUIRED' ? 401 : 502;
+        json(res, status, { code: error.code || 'CLOUD_BOOKSHELF_ERROR', message: error.message });
+      }
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/downloads') {
       json(res, 200, { items: listDownloads() });
       return;
@@ -151,6 +160,29 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
         json(res, 200, await details(input.seriesId, controller.signal));
       } else if (url.pathname === '/search') {
         json(res, 200, await searchDramas({ keyword: input.keyword, page: input.page, cursor: input.cursor, signal: controller.signal }));
+      } else if (url.pathname === '/discover/category') {
+        json(res, 200, await browseCategory({
+          genre: input.genre,
+          theme: input.theme,
+          role: input.role,
+          epoch: input.epoch,
+          sort: input.sort,
+          gender: input.gender,
+          onlineTime: input.onlineTime,
+          offset: input.offset,
+          sessionId: input.sessionId,
+          needSelectorPanel: input.needSelectorPanel,
+          limit: input.limit,
+          signal: controller.signal,
+        }));
+      } else if (url.pathname === '/discover/rank') {
+        json(res, 200, await browseRank({
+          rankType: input.rankType,
+          offset: input.offset,
+          sessionId: input.sessionId,
+          limit: input.limit,
+          signal: controller.signal,
+        }));
       } else if (url.pathname === '/auth/qr') {
         json(res, 200, await createQrLogin(controller.signal));
       } else if (url.pathname === '/auth/poll') {
@@ -164,10 +196,15 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
       } else if (url.pathname === '/downloads/start') {
         const quality = typeof input.quality === 'string' && ALLOWED_QUALITIES.has(input.quality) ? input.quality : 'auto';
         json(res, 200, startDownload({ seriesId: input.seriesId, episodeId: input.episodeId, quality }));
+      } else if (url.pathname === '/downloads/retry') {
+        json(res, 200, retryDownload(input.id));
       } else if (url.pathname === '/downloads/cancel') {
         json(res, 200, cancelDownload(input.id));
       } else if (url.pathname === '/downloads/delete') {
         json(res, 200, await deleteDownload(input.id));
+      } else if (url.pathname === '/downloads/clear') {
+        const scope = input.scope === 'all' || input.scope === 'completed' || input.scope === 'finished' ? input.scope : 'finished';
+        json(res, 200, await clearDownloads(scope));
       } else if (url.pathname === '/downloads/play') {
         const { task, data } = await readDownloadedMedia(input.id);
         const mediaUrl = registerMediaBuffer(data, host);
@@ -202,14 +239,27 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
 }
 
 async function start() {
+  await restoreSession(AbortSignal.timeout(2500)).catch(() => {});
   const { server, token } = createService();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
-  const target = path.join(__dirname, '../.tmp/service-config.ts');
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(target, `export const serviceConfig = ${JSON.stringify({ baseUrl, token })};\n`, { mode: 0o600 });
-  await fs.writeFile(path.join(__dirname, '../.tmp/service-ready'), String(process.pid));
-  console.log('本机播放服务已启动（凭证仅写入被忽略的项目临时配置）');
+  const launchFile = process.env.HG_NSH_LAUNCH_FILE;
+  if (launchFile) {
+    // The launcher execs the UI in place. Stop serving when that process exits.
+    const parent = process.ppid;
+    if (parent === 1) process.exit(0);
+    setInterval(() => {
+      if (process.ppid !== parent) process.exit(0);
+    }, 1000).unref();
+    await fs.writeFile(launchFile + '.ready', `${baseUrl} ${token}\n`, { mode: 0o600 });
+    await fs.rename(launchFile + '.ready', launchFile);
+  } else {
+    const target = path.join(__dirname, '../.tmp/service-config.ts');
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, `export const serviceConfig = ${JSON.stringify({ baseUrl, token })};\n`, { mode: 0o600 });
+    await fs.writeFile(path.join(__dirname, '../.tmp/service-ready'), String(process.pid));
+    console.log('本机播放服务已启动（凭证仅写入被忽略的项目临时配置）');
+  }
   const stop = () => {
     server.close();
     process.exit(0);

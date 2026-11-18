@@ -30,3 +30,29 @@ test('service authorizes controls and serves only opaque resources with Range',a
  assert.equal((await fetch(result.mediaUrl,{headers:{Range:'bytes=10-'}})).status,416);
  assert.equal((await fetch(base+'/media/not-a-session')).status,401);
 });
+test('service enforces validation and auth boundaries on detail, search, auth and downloads routes',async t=>{
+ const {server}=createService({token:'test-only-secret',prepareMedia:async()=>({title:'test',data:Buffer.from('0123456789')})});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve)); t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const base=`http://127.0.0.1:${server.address().port}`;
+ const headers={Authorization:'Bearer test-only-secret','Content-Type':'application/json'};
+
+ const statusRes=await fetch(base+'/auth/status',{headers});
+ assert.equal(statusRes.status,200);
+ assert.equal((await statusRes.json()).loggedIn,false);
+
+ const cloudRes=await fetch(base+'/auth/cloud-history',{headers});
+ assert.equal(cloudRes.status,401);
+
+ const badDetail=await fetch(base+'/detail',{method:'POST',headers,body:JSON.stringify({seriesId:'invalid-id'})});
+ assert.equal(badDetail.status,400);
+
+ const badSearch=await fetch(base+'/search',{method:'POST',headers,body:JSON.stringify({keyword:'   '})});
+ assert.equal(badSearch.status,400);
+
+ const badDl=await fetch(base+'/downloads/start',{method:'POST',headers,body:JSON.stringify({seriesId:'bad'})});
+ assert.equal(badDl.status,400);
+
+ const dlList=await fetch(base+'/downloads',{headers});
+ assert.equal(dlList.status,200);
+ assert.ok(Array.isArray((await dlList.json()).items));
+});

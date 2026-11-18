@@ -29,7 +29,7 @@ export function parseHome(html: string): Section[] {
  return page.homeSections.map(value => {
   const section = record(value);
   if (!Array.isArray(section.video_list)) throw new Error("官网分区剧集缺失");
-  return { name: text(section.tab_name), dramas: section.video_list.map(value => {
+  return { name: text(section.tab_name), dramas: section.video_list.filter(item => item != null).map(value => {
    const row = record(value), id = text(row.series_id);
    if (!/^\d+$/.test(id)) throw new Error("官网剧集编号无效");
    if (typeof row.episode_cnt !== "number" || !Number.isInteger(row.episode_cnt) || row.episode_cnt < 1) throw new Error("官网集数无效");

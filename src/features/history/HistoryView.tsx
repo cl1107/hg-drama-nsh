@@ -5,12 +5,16 @@ import { currentAccount } from "../auth/LoginView";
 import {
   favorites,
   likes,
+  removeFavorites,
   removeHistoryItems,
+  removeLikes,
+  removeSubscriptions,
   subscriptions,
   toggleFavorite,
   toggleLike,
   toggleSubscription,
   watchHistory,
+  type DramaSummary,
 } from "../../stores/user-data";
 
 interface CloudHistoryItem {
@@ -22,11 +26,26 @@ interface CloudHistoryItem {
   totalEpisodes: number;
 }
 
+interface CloudBookshelfItem {
+  seriesId: string;
+  title: string;
+  cover: string;
+  episodes: number;
+  collectTime?: number;
+}
+
 export function HistoryView(props: {
   initialTab?: "history" | "cloud" | "favorites" | "likes" | "subscriptions";
   onPlay: (seriesId: string, episodeId?: string, positionSec?: number) => void;
 }) {
-  const tab = signal<"history" | "cloud" | "favorites" | "likes" | "subscriptions">(props.initialTab ?? "history");
+  const defaultTab =
+    props.initialTab && props.initialTab !== "history"
+      ? props.initialTab
+      : currentAccount() && watchHistory().length === 0
+        ? "cloud"
+        : (props.initialTab ?? "history");
+
+  const tab = signal<"history" | "cloud" | "favorites" | "likes" | "subscriptions">(defaultTab);
   const filter = signal<"all" | "watching" | "completed">("all");
   const query = signal("");
   const managing = signal(false);
@@ -34,19 +53,70 @@ export function HistoryView(props: {
   const cloudItems = signal<CloudHistoryItem[]>([]);
   const cloudLoading = signal(false);
   const cloudError = signal("");
+  const cloudShelf = signal<CloudBookshelfItem[]>([]);
+  const shelfLoading = signal(false);
+  const shelfError = signal("");
+  let cloudAccountId = "";
+  let cloudGen = 0;
+  let shelfAccountId = "";
+  let shelfGen = 0;
 
   const loadCloudHistory = async () => {
+    const accountId = currentAccount()?.userId ?? "";
+    if (!accountId) {
+      cloudItems.set([]);
+      cloudAccountId = "";
+      return;
+    }
+    if (cloudAccountId && cloudAccountId !== accountId) {
+      cloudItems.set([]);
+    }
+    cloudAccountId = accountId;
+    const gen = ++cloudGen;
     cloudLoading.set(true);
     cloudError.set("");
     try {
       const res = await serviceGet<{ items: CloudHistoryItem[] }>("/auth/cloud-history");
+      if (gen !== cloudGen || currentAccount()?.userId !== accountId) return;
       cloudItems.set(Array.isArray(res.items) ? res.items : []);
     } catch (e) {
+      if (gen !== cloudGen) return;
       cloudError.set(e instanceof Error ? e.message : "读取云端历史失败");
     } finally {
-      cloudLoading.set(false);
+      if (gen === cloudGen) cloudLoading.set(false);
     }
   };
+
+  const loadCloudBookshelf = async () => {
+    const accountId = currentAccount()?.userId ?? "";
+    if (!accountId) {
+      cloudShelf.set([]);
+      shelfAccountId = "";
+      return;
+    }
+    if (shelfAccountId && shelfAccountId !== accountId) {
+      cloudShelf.set([]);
+    }
+    shelfAccountId = accountId;
+    const gen = ++shelfGen;
+    shelfLoading.set(true);
+    shelfError.set("");
+    try {
+      const res = await serviceGet<{ items: CloudBookshelfItem[] }>("/auth/cloud-bookshelf");
+      if (gen !== shelfGen || currentAccount()?.userId !== accountId) return;
+      cloudShelf.set(Array.isArray(res.items) ? res.items : []);
+    } catch (e) {
+      if (gen !== shelfGen) return;
+      shelfError.set(e instanceof Error ? e.message : "读取云端追更/收藏失败");
+    } finally {
+      if (gen === shelfGen) shelfLoading.set(false);
+    }
+  };
+
+  if (currentAccount()) {
+    void loadCloudHistory();
+    void loadCloudBookshelf();
+  }
 
   const toggleSelect = (id: string) => {
     const cur = selectedIds();
@@ -63,36 +133,86 @@ export function HistoryView(props: {
     });
   };
 
-  const filteredSummary = (list: ReturnType<typeof favorites>) => {
+  const filteredCloudHistory = () => {
+    const kw = query().trim();
+    return kw ? cloudItems().filter(i => i.title.includes(kw)) : cloudItems();
+  };
+
+  const filteredSummary = (list: DramaSummary[]) => {
     const kw = query().trim();
     return kw ? list.filter(i => i.title.includes(kw)) : list;
   };
 
-  const deleteSelectedHistory = () => {
-    if (!selectedIds().length) return;
-    removeHistoryItems(selectedIds());
+  const mergedShelfAndLocal = (localList: DramaSummary[], tag: string) => {
+    const kw = query().trim();
+    const seen = new Set<string>();
+    const combined: { seriesId: string; title: string; cover: string; episodes: number; source: "cloud" | "local"; label: string }[] = [];
+    for (const item of localList) {
+      if (kw && !item.title.includes(kw)) continue;
+      seen.add(item.seriesId);
+      combined.push({ ...item, source: "local", label: `本地${tag}` });
+    }
+    if (currentAccount()) {
+      for (const item of cloudShelf()) {
+        if (seen.has(item.seriesId)) continue;
+        if (kw && !item.title.includes(kw)) continue;
+        seen.add(item.seriesId);
+        combined.push({ ...item, source: "cloud", label: "云端书架" });
+      }
+    }
+    return combined;
+  };
+
+  const deleteSelected = () => {
+    const ids = selectedIds();
+    if (!ids.length) return;
+    if (tab() === "history") removeHistoryItems(ids);
+    else if (tab() === "favorites") removeFavorites(ids);
+    else if (tab() === "likes") removeLikes(ids);
+    else if (tab() === "subscriptions") removeSubscriptions(ids);
     selectedIds.set([]);
     managing.set(false);
+  };
+
+  const currentLocalCount = () => {
+    if (tab() === "history") return watchHistory().length;
+    if (tab() === "favorites") return favorites().length;
+    if (tab() === "likes") return likes().length;
+    if (tab() === "subscriptions") return subscriptions().length;
+    return 0;
+  };
+
+  const switchTab = (next: "history" | "cloud" | "favorites" | "likes" | "subscriptions") => {
+    tab.set(next);
+    managing.set(false);
+    selectedIds.set([]);
+    if (next === "cloud" && currentAccount()) void loadCloudHistory();
+    if ((next === "favorites" || next === "subscriptions") && currentAccount()) void loadCloudBookshelf();
   };
 
   return (
     <View class="flex-1 gap-4">
       <View class="flex-row items-center justify-between gap-3 flex-wrap">
-        <View class="flex-row gap-2">
-          <FilterChip label={`历史 (${watchHistory().length})`} selected={tab() === "history"} onPress={() => tab.set("history")} />
+        <View class="flex-row gap-2 flex-wrap">
+          <FilterChip label={`历史 (${watchHistory().length})`} selected={tab() === "history"} onPress={() => switchTab("history")} />
           <FilterChip
-            label="云端历史"
+            label={currentAccount() && cloudItems().length > 0 ? `云端历史 (${cloudItems().length})` : "云端历史"}
             selected={tab() === "cloud"}
-            onPress={() => {
-              tab.set("cloud");
-              if (currentAccount()) void loadCloudHistory();
-            }}
+            onPress={() => switchTab("cloud")}
           />
-          <FilterChip label={`收藏 (${favorites().length})`} selected={tab() === "favorites"} onPress={() => tab.set("favorites")} />
-          <FilterChip label={`点赞 (${likes().length})`} selected={tab() === "likes"} onPress={() => tab.set("likes")} />
-          <FilterChip label={`追更/预约 (${subscriptions().length})`} selected={tab() === "subscriptions"} onPress={() => tab.set("subscriptions")} />
+          <FilterChip
+            label={`收藏 (${favorites().length + (currentAccount() ? cloudShelf().filter(c => !favorites().some(f => f.seriesId === c.seriesId)).length : 0)})`}
+            selected={tab() === "favorites"}
+            onPress={() => switchTab("favorites")}
+          />
+          <FilterChip label={`点赞 (${likes().length})`} selected={tab() === "likes"} onPress={() => switchTab("likes")} />
+          <FilterChip
+            label={`追更/预约 (${subscriptions().length + (currentAccount() ? cloudShelf().filter(c => !subscriptions().some(s => s.seriesId === c.seriesId)).length : 0)})`}
+            selected={tab() === "subscriptions"}
+            onPress={() => switchTab("subscriptions")}
+          />
         </View>
-        <If when={tab() === "history" && watchHistory().length > 0}>
+        <If when={tab() !== "cloud" && currentLocalCount() > 0}>
           <View class="flex-row gap-2">
             <If when={managing()}>
               <Button
@@ -100,7 +220,7 @@ export function HistoryView(props: {
                 variant="destructive"
                 size="sm"
                 disabled={selectedIds().length === 0}
-                onPress={deleteSelectedHistory}
+                onPress={deleteSelected}
               />
             </If>
             <Button
@@ -120,7 +240,7 @@ export function HistoryView(props: {
         value={query()}
         onChange={val => query.set(val)}
         onClear={() => query.set("")}
-        placeholder="搜索当前本地记录"
+        placeholder="搜索当前记录"
       />
 
       <If when={tab() === "history"}>
@@ -171,11 +291,11 @@ export function HistoryView(props: {
           <If when={!!currentAccount() && !!cloudError()}>
             <StatusView kind="error" message={cloudError()} actionLabel="重试" onAction={() => void loadCloudHistory()} />
           </If>
-          <If when={!!currentAccount() && !cloudLoading() && !cloudError() && cloudItems().length === 0}>
+          <If when={!!currentAccount() && !cloudLoading() && !cloudError() && filteredCloudHistory().length === 0}>
             <StatusView kind="empty" message="暂无云端观看记录" />
           </If>
-          <If when={!!currentAccount() && cloudItems().length > 0}>
-            <List each={cloudItems()} keyExtractor={i => i.seriesId} estimatedItemSize={124} class="flex-1">
+          <If when={!!currentAccount() && filteredCloudHistory().length > 0}>
+            <List each={filteredCloudHistory()} keyExtractor={i => i.seriesId} estimatedItemSize={124} class="flex-1">
               {item => (
                 <DramaListRow
                   title={item().title}
@@ -191,36 +311,57 @@ export function HistoryView(props: {
       </If>
 
       <If when={tab() === "favorites"}>
-        <If when={filteredSummary(favorites()).length === 0}>
-          <StatusView kind="empty" message="暂无本地收藏短剧" />
-        </If>
-        <If when={filteredSummary(favorites()).length > 0}>
-          <List each={filteredSummary(favorites())} keyExtractor={i => i.seriesId} estimatedItemSize={124} class="flex-1">
-            {item => (
-              <DramaListRow
-                title={item().title}
-                cover={item().cover}
-                subtitle={`全${item().episodes}集 · 本地收藏`}
-                actionLabel="播放"
-                onAction={() => props.onPlay(item().seriesId)}
-                secondaryLabel="取消收藏"
-                onSecondary={() =>
-                  toggleFavorite({
-                    seriesId: item().seriesId,
-                    title: item().title,
-                    cover: item().cover,
-                    episodes: item().episodes,
-                  })
-                }
-              />
-            )}
-          </List>
-        </If>
+        <View class="flex-1 gap-2">
+          <If when={!!currentAccount()}>
+            <View class="flex-row items-center justify-between">
+              <Text class="text-xs text-muted-foreground">展示本地收藏与云端书架短剧</Text>
+              <Button label={shelfLoading() ? "同步中…" : "刷新云端"} variant="outline" size="sm" onPress={() => void loadCloudBookshelf()} />
+            </View>
+          </If>
+          <If when={!!shelfError()}>
+            <Text class="text-xs text-destructive">{shelfError()}</Text>
+          </If>
+          <If when={shelfLoading() && mergedShelfAndLocal(favorites(), "收藏").length === 0}>
+            <StatusView kind="loading" message="正在读取云端收藏…" />
+          </If>
+          <If when={!shelfLoading() && mergedShelfAndLocal(favorites(), "收藏").length === 0}>
+            <StatusView kind="empty" message="暂无收藏短剧" />
+          </If>
+          <If when={mergedShelfAndLocal(favorites(), "收藏").length > 0}>
+            <List each={mergedShelfAndLocal(favorites(), "收藏")} keyExtractor={i => i.seriesId} estimatedItemSize={124} class="flex-1">
+              {item => (
+                <DramaListRow
+                  title={item().title}
+                  cover={item().cover}
+                  subtitle={`${item().episodes ? `全${item().episodes}集 · ` : ""}${item().label}`}
+                  actionLabel={managing() && item().source === "local" ? (selectedIds().includes(item().seriesId) ? "已选" : "选择") : "播放"}
+                  onAction={() =>
+                    managing() && item().source === "local"
+                      ? toggleSelect(item().seriesId)
+                      : props.onPlay(item().seriesId)
+                  }
+                  secondaryLabel={!managing() && item().source === "local" ? "取消收藏" : undefined}
+                  onSecondary={
+                    !managing() && item().source === "local"
+                      ? () =>
+                          toggleFavorite({
+                            seriesId: item().seriesId,
+                            title: item().title,
+                            cover: item().cover,
+                            episodes: item().episodes,
+                          })
+                      : undefined
+                  }
+                />
+              )}
+            </List>
+          </If>
+        </View>
       </If>
 
       <If when={tab() === "likes"}>
         <If when={filteredSummary(likes()).length === 0}>
-          <StatusView kind="empty" message="暂无本地点赞记录" />
+          <StatusView kind="empty" message="暂无本地点赞记录（云端点赞列表接口待补全）" />
         </If>
         <If when={filteredSummary(likes()).length > 0}>
           <List each={filteredSummary(likes())} keyExtractor={i => i.seriesId} estimatedItemSize={124} class="flex-1">
@@ -229,16 +370,19 @@ export function HistoryView(props: {
                 title={item().title}
                 cover={item().cover}
                 subtitle={`全${item().episodes}集 · 本地点赞`}
-                actionLabel="播放"
-                onAction={() => props.onPlay(item().seriesId)}
-                secondaryLabel="取消点赞"
-                onSecondary={() =>
-                  toggleLike({
-                    seriesId: item().seriesId,
-                    title: item().title,
-                    cover: item().cover,
-                    episodes: item().episodes,
-                  })
+                actionLabel={managing() ? (selectedIds().includes(item().seriesId) ? "已选" : "选择") : "播放"}
+                onAction={() => (managing() ? toggleSelect(item().seriesId) : props.onPlay(item().seriesId))}
+                secondaryLabel={managing() ? undefined : "取消点赞"}
+                onSecondary={
+                  managing()
+                    ? undefined
+                    : () =>
+                        toggleLike({
+                          seriesId: item().seriesId,
+                          title: item().title,
+                          cover: item().cover,
+                          episodes: item().episodes,
+                        })
                 }
               />
             )}
@@ -247,31 +391,52 @@ export function HistoryView(props: {
       </If>
 
       <If when={tab() === "subscriptions"}>
-        <If when={filteredSummary(subscriptions()).length === 0}>
-          <StatusView kind="empty" message="暂无本地追更或预约记录" />
-        </If>
-        <If when={filteredSummary(subscriptions()).length > 0}>
-          <List each={filteredSummary(subscriptions())} keyExtractor={i => i.seriesId} estimatedItemSize={124} class="flex-1">
-            {item => (
-              <DramaListRow
-                title={item().title}
-                cover={item().cover}
-                subtitle={`全${item().episodes}集 · 本地追更`}
-                actionLabel="播放"
-                onAction={() => props.onPlay(item().seriesId)}
-                secondaryLabel="取消追更"
-                onSecondary={() =>
-                  toggleSubscription({
-                    seriesId: item().seriesId,
-                    title: item().title,
-                    cover: item().cover,
-                    episodes: item().episodes,
-                  })
-                }
-              />
-            )}
-          </List>
-        </If>
+        <View class="flex-1 gap-2">
+          <If when={!!currentAccount()}>
+            <View class="flex-row items-center justify-between">
+              <Text class="text-xs text-muted-foreground">展示本地追更/预约与云端书架短剧</Text>
+              <Button label={shelfLoading() ? "同步中…" : "刷新云端"} variant="outline" size="sm" onPress={() => void loadCloudBookshelf()} />
+            </View>
+          </If>
+          <If when={!!shelfError()}>
+            <Text class="text-xs text-destructive">{shelfError()}</Text>
+          </If>
+          <If when={shelfLoading() && mergedShelfAndLocal(subscriptions(), "追更").length === 0}>
+            <StatusView kind="loading" message="正在读取云端追更…" />
+          </If>
+          <If when={!shelfLoading() && mergedShelfAndLocal(subscriptions(), "追更").length === 0}>
+            <StatusView kind="empty" message="暂无追更或预约记录" />
+          </If>
+          <If when={mergedShelfAndLocal(subscriptions(), "追更").length > 0}>
+            <List each={mergedShelfAndLocal(subscriptions(), "追更")} keyExtractor={i => i.seriesId} estimatedItemSize={124} class="flex-1">
+              {item => (
+                <DramaListRow
+                  title={item().title}
+                  cover={item().cover}
+                  subtitle={`${item().episodes ? `全${item().episodes}集 · ` : ""}${item().label}`}
+                  actionLabel={managing() && item().source === "local" ? (selectedIds().includes(item().seriesId) ? "已选" : "选择") : "播放"}
+                  onAction={() =>
+                    managing() && item().source === "local"
+                      ? toggleSelect(item().seriesId)
+                      : props.onPlay(item().seriesId)
+                  }
+                  secondaryLabel={!managing() && item().source === "local" ? "取消追更" : undefined}
+                  onSecondary={
+                    !managing() && item().source === "local"
+                      ? () =>
+                          toggleSubscription({
+                            seriesId: item().seriesId,
+                            title: item().title,
+                            cover: item().cover,
+                            episodes: item().episodes,
+                          })
+                      : undefined
+                  }
+                />
+              )}
+            </List>
+          </If>
+        </View>
       </If>
     </View>
   );

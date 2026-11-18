@@ -1,5 +1,5 @@
 import { signal } from "nsh";
-import { serviceConfig } from "../../../.tmp/service-config";
+import { serviceConfig } from "../../service-client";
 import type { QualityOption } from "../../stores/user-data";
 
 export interface Episode {
@@ -19,19 +19,21 @@ export interface Playback {
   encrypted: boolean;
   mediaUrl: string;
   initialPositionSec?: number;
+  isOffline?: boolean;
 }
 
 type State =
   | { kind: "idle" }
   | { kind: "preparing" }
   | { kind: "ready"; playback: Playback }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; code?: string };
 
 const state = signal<State>({ kind: "idle" });
 let pending: AbortController | undefined;
 let currentSeries: string | undefined;
 let currentEpisode: string | undefined;
 let currentQuality: QualityOption = "auto";
+let currentDownloadId: string | undefined;
 
 export const playbackState = () => state();
 
@@ -109,6 +111,7 @@ export async function startPlayback(
   currentSeries = seriesId;
   currentEpisode = episodeId;
   currentQuality = quality;
+  currentDownloadId = undefined;
   if (!serviceConfig.baseUrl) {
     state.set({ kind: "error", message: "请先运行 ./tools/dev 启动本机播放服务" });
     return;
@@ -134,7 +137,10 @@ export async function startPlayback(
     const value: unknown = await response.json();
     if (!response.ok) {
       const failure = record(value);
-      throw new Error(typeof failure.message === "string" ? failure.message : `播放准备失败（HTTP ${response.status}）`);
+      throw Object.assign(
+        new Error(failure.code === "EMPTY_RESPONSE" ? "上游暂未提供本集正片片源" : typeof failure.message === "string" ? failure.message : `播放准备失败（HTTP ${response.status}）`),
+        { code: typeof failure.code === "string" ? failure.code : "PLAYBACK_FAILED" },
+      );
     }
     const playback = parsePlayback(value, serviceConfig.baseUrl, seriesId, episodeId);
     if (initialPositionSec > 2) playback.initialPositionSec = initialPositionSec;
@@ -143,6 +149,7 @@ export async function startPlayback(
     if (pending === controller) {
       state.set({
         kind: "error",
+        ...(error instanceof Error && "code" in error && typeof error.code === "string" ? {code:error.code} : {}),
         message: controller.signal.aborted
           ? "播放准备超时，请重试"
           : error instanceof Error
@@ -159,6 +166,7 @@ export async function startOfflinePlayback(downloadId: string, seriesId: string,
   cancelPlayback();
   currentSeries = seriesId;
   currentEpisode = episodeId;
+  currentDownloadId = downloadId;
   if (!serviceConfig.baseUrl) {
     state.set({ kind: "error", message: "请先运行 ./tools/dev 启动本机播放服务" });
     return;
@@ -182,6 +190,7 @@ export async function startOfflinePlayback(downloadId: string, seriesId: string,
       throw new Error(typeof failure.message === "string" ? failure.message : `离线播放失败（HTTP ${response.status}）`);
     }
     const playback = parsePlayback(value, serviceConfig.baseUrl, seriesId, episodeId);
+    playback.isOffline = true;
     if (pending === controller) state.set({ kind: "ready", playback });
   } catch (error) {
     if (pending === controller) {
@@ -194,6 +203,10 @@ export async function startOfflinePlayback(downloadId: string, seriesId: string,
 }
 
 export function retryPlayback() {
+  if (currentDownloadId && currentSeries && currentEpisode) {
+    void startOfflinePlayback(currentDownloadId, currentSeries, currentEpisode);
+    return;
+  }
   if (currentSeries) void startPlayback(currentSeries, currentEpisode, currentQuality);
 }
 

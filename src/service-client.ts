@@ -1,4 +1,10 @@
-import { serviceConfig } from "../.tmp/service-config";
+import process from "process";
+import { serviceConfig as devConfig } from "../.tmp/service-config";
+
+const { HG_NSH_SERVICE_URL, HG_NSH_SERVICE_TOKEN } = process.env;
+export const serviceConfig = HG_NSH_SERVICE_URL && HG_NSH_SERVICE_TOKEN
+  ? { baseUrl: HG_NSH_SERVICE_URL, token: HG_NSH_SERVICE_TOKEN }
+  : devConfig;
 
 export function hasService(): boolean {
   return Boolean(serviceConfig.baseUrl && serviceConfig.token);

@@ -107,7 +107,7 @@ export function LoginView() {
         pollTimer = setTimeout(async () => {
           if (gen !== generation) return;
           try {
-            const poll = await servicePost<{ status: string; user?: AccountUser }>("/auth/poll", { token: res.token });
+            const poll = await servicePost<{ status: string; user?: AccountUser; persistent?: boolean }>("/auth/poll", { token: res.token });
             if (gen !== generation) return;
             if (poll.status === "scanned") {
               status.set("scanned");
@@ -121,7 +121,7 @@ export function LoginView() {
             } else if (poll.status === "confirmed" && poll.user) {
               stopPolling();
               currentAccount.set(poll.user);
-              sessionPersistent.set(true);
+              sessionPersistent.set(Boolean(poll.persistent));
               sessionPendingVerification.set(false);
               await loadUserData(`user:${poll.user.userId}`);
               status.set("idle");
@@ -179,7 +179,7 @@ export function LoginView() {
     smsBusy.set(true);
     smsError.set("");
     try {
-      const res = await servicePost<{ loggedIn: boolean; user?: AccountUser; captcha?: string; message?: string }>(
+      const res = await servicePost<{ loggedIn: boolean; user?: AccountUser; persistent?: boolean; captcha?: string; message?: string }>(
         "/auth/sms/login",
         {
           mobile: mobile().trim(),
@@ -190,6 +190,8 @@ export function LoginView() {
       if (res.loggedIn && res.user) {
         stopCountdown();
         currentAccount.set(res.user);
+        sessionPersistent.set(Boolean(res.persistent));
+        sessionPendingVerification.set(false);
         await loadUserData(`user:${res.user.userId}`);
         mobile.set("");
         smsCode.set("");

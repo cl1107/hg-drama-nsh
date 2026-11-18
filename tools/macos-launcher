@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+contents=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+export HG_NSH_DOWNLOAD_DIR="$HOME/Library/Application Support/com.hgdrama.nsh/downloads"
+
+launch_dir=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/hg-nsh.XXXXXX")
+export HG_NSH_LAUNCH_FILE="$launch_dir/connection"
+"$contents/MacOS/node" "$contents/Resources/backend/service/server.cjs" &
+service_pid=$!
+
+cleanup() {
+  kill "$service_pid" 2>/dev/null || true
+  /bin/rm -f "$HG_NSH_LAUNCH_FILE" "$HG_NSH_LAUNCH_FILE.ready"
+  /bin/rmdir "$launch_dir"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+attempt=0
+until [ -f "$HG_NSH_LAUNCH_FILE" ]; do
+  if ! kill -0 "$service_pid" 2>/dev/null || [ "$attempt" -ge 150 ]; then
+    echo "本机播放服务启动失败" >&2
+    exit 1
+  fi
+  attempt=$((attempt + 1))
+  /bin/sleep 0.1
+done
+
+read -r HG_NSH_SERVICE_URL HG_NSH_SERVICE_TOKEN < "$HG_NSH_LAUNCH_FILE"
+export HG_NSH_SERVICE_URL HG_NSH_SERVICE_TOKEN
+/bin/rm "$HG_NSH_LAUNCH_FILE"
+/bin/rmdir "$launch_dir"
+unset HG_NSH_LAUNCH_FILE
+# Keep the LaunchServices PID so the service can follow the UI's lifetime.
+exec "$contents/MacOS/NSH" "$@"
