@@ -67,6 +67,35 @@ test("recommendation player opens episodes and navigating away removes its video
  await app.waitFor("label:继续播放");
  await app.press("找剧 >> nth=0");
  await app.waitFor("输入剧名 / 关键词");
- await app.waitFor("id:global-video",{state:"gone"});
- expect(app.texts()).not.toContain("App 分类筛选");
+  await app.waitFor("id:global-video",{state:"gone"});
+  expect(app.texts()).not.toContain("App 分类筛选");
+});
+
+test("history playback toggles fullscreen in place without blanking the player", async () => {
+  const playback = {seriesId:candidate.id,title:candidate.title,episode:{episodeId:"123",index:1},episodes:[{episodeId:"123",index:1},{episodeId:"124",index:2}],codec:"hevc",quality:"1080p",encrypted:true,mediaUrl:serviceConfig.baseUrl+"/media/"+"a".repeat(64)};
+  const app = await open("./App.tsx",{platform:"macos",width:1480,height:820,network:{
+    ...routes,
+    [`GET ${serviceConfig.baseUrl}/auth/status`]: {status:200,body:JSON.stringify({loggedIn:true,user:{userId:"u1",nickname:"测试用户"}})},
+    [`GET ${serviceConfig.baseUrl}/auth/cloud-history`]: {status:200,body:JSON.stringify({items:[{seriesId:candidate.id,title:candidate.title,cover:"",episodeId:"123",episodeIndex:1,totalEpisodes:76,watchedAt:1700000000000}]})},
+    [`GET ${serviceConfig.baseUrl}/auth/cloud-bookshelf`]: {status:200,body:JSON.stringify({items:[]})},
+    [`POST ${serviceConfig.baseUrl}/play`]: {status:200,body:JSON.stringify(playback)},
+  }});
+  await app.waitFor("测试用户");
+  await app.press("历史/收藏/点赞");
+  await app.press("云端历史 (1)");
+  await app.waitFor(candidate.title);
+  await app.press("播放");
+  await app.waitFor("短剧播放");
+  await app.waitFor("id:global-video");
+  await app.hover("id:global-player");
+  await app.press("label:视频全屏");
+  await app.waitFor("id:global-video");
+  expect(app.window("main").state()?.mode).toBe("fullScreen");
+  expect(app.texts()).not.toContain("短剧播放");
+  expect(app.texts()).not.toContain("收起");
+  await app.press("label:退出视频全屏 >> nth=1");
+  await app.waitFor("短剧播放");
+  await app.waitFor("收起");
+  await app.waitFor("id:global-video");
+  expect(app.window("main").state()?.mode).toBe("normal");
 });

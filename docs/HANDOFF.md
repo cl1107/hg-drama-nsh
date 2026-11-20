@@ -1,5 +1,13 @@
 # 开发交接
 
+## 2026-11-19 播放器全屏白屏/空白修复
+
+修复历史播放等页面进入「短剧播放」后点击全屏导致主区域变空的问题：
+- **根因**：[src/features/player/GlobalPlayer.tsx](src/features/player/GlobalPlayer.tsx) 原本通过 `<If when={!fullscreen()}><Surface /></If>` 卸载主窗口内的播放器，再挂载 `<Window id="video-fullscreen" defaultMode="fullScreen">` 打开新窗口；而 [tools/package-macos](tools/package-macos) 声明的 `capabilities` 未授予 `windows` 权限，导致新窗口无法打开、主窗口播放器被卸载为空白；同时切换全屏时销毁重建 `<Video>` 也会造成播放中断。
+- **修复**：改为在当前主窗口内原地全屏（通过 `currentWindow().setMode("fullScreen")` 切换主窗口全屏并监听 `modeChange` 同步退出），[App.tsx](App.tsx) 响应 `isVideoFullscreen()` 隐藏侧边栏与页头并移除内容区内边距，不再新建第二窗口也不卸载重建 `<Video>`；补充 `onMouseMove` 保持全屏下鼠标移动可唤出控制栏。
+- **验证**：`./tools/nsh check`、`./tools/nsh build`、`./tools/nsh test App.test.tsx`（5/5，含新增历史播放原地全屏与退出回归用例）、`./tools/nsh test src/features/player/session.test.tsx`（1/1）全部通过。
+- **下一步**：如需更新 `/Applications/红果短剧-NSH.app`，运行 `./tools/package-macos` 重新打包并替换安装。
+
 ## 2026-11-18 NSH 0.6.0 重打包
 
 项目工具更新为 [NSH 0.6.0 (5541637)](https://github.com/longbridge/nsh/releases/tag/v0.6.0)。官方 macOS arm64 发行档 SHA-256 为 `b2a8370c8b44ca6059d2d8665b48b08472a4fee3956813b99223f4e3ce5491d9`，与 GitHub 发行资产摘要和独立校验文件一致。打包配置补充 0.6.0 要求的 `application` 权限。

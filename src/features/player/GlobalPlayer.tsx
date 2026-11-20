@@ -1,5 +1,5 @@
 import { signal, View, Text, Video, Image, List, cleanup, keymap, Clipboard, token, type VideoRef } from "nsh";
-import { Window, isAvailable } from "nsh/desktop";
+import { currentWindow, isAvailable, type WindowMode } from "nsh/desktop";
 import { Button as BaseButton, Slider, Sheet } from "nsh/base";
 import { Button, FilterChip } from "../../ui/controls";
 import { IconButton, type IconName } from "../../ui/icons";
@@ -7,6 +7,9 @@ import { playbackState, startPlayback, cancelPlayback, retryPlayback, type Playb
 import { preferences, subscriptions, isFavorite, isLiked, isSubscribed, recordWatchProgress, toggleFavorite, toggleLike, toggleSubscription, type QualityOption } from "../../stores/user-data";
 import { servicePost } from "../../service-client";
 import { createRecommendationFeed, type Recommendation, type RecommendationChannel } from "../recommend/feed";
+
+const videoFullscreen = signal(false);
+export const isVideoFullscreen = () => videoFullscreen();
 
 function time(value: number) { const seconds = Math.max(0, Math.floor(value)); return `${String(Math.floor(seconds / 60)).padStart(2,"0")}:${String(seconds % 60).padStart(2,"0")}`; }
 export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: string) => void; onFind: () => void; onBack?: () => void }) {
@@ -16,10 +19,39 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
  const panel = signal<"episodes" | "settings" | null>(null), expanded = signal(false), busyAction = signal(false);
  const quality = signal<QualityOption>(preferences().defaultQuality);
  const hidden = new Set<string>();
- const fullscreen = signal(false), hovered = signal(false);
- let transferPosition = 0;
+ const hovered = signal(false);
+ const hostWindow = isAvailable ? currentWindow() : null;
+ let previousWindowMode: WindowMode = "normal";
+ let managedWindowFullscreen = false;
+ const fullscreen = () => videoFullscreen();
  const showControls = () => hovered() || panel() !== null;
- const toggleFullscreen = () => { transferPosition = position(); fullscreen.set(!fullscreen()); hovered.set(false); };
+ const setFullscreen = (next: boolean) => {
+  if (next === videoFullscreen()) return;
+  if (next) {
+   const currentMode = hostWindow?.state()?.mode ?? "normal";
+   if (hostWindow && currentMode !== "fullScreen") {
+    previousWindowMode = currentMode;
+    managedWindowFullscreen = true;
+    hostWindow.setMode("fullScreen");
+   } else {
+    managedWindowFullscreen = false;
+   }
+   videoFullscreen.set(true);
+   return;
+  }
+  videoFullscreen.set(false);
+  if (managedWindowFullscreen && hostWindow?.state()?.mode === "fullScreen") {
+   hostWindow.setMode(previousWindowMode === "fullScreen" ? "normal" : previousWindowMode);
+  }
+  managedWindowFullscreen = false;
+ };
+ const toggleFullscreen = () => setFullscreen(!videoFullscreen());
+ const stopModeListener = hostWindow?.on("modeChange", event => {
+  if (event.mode !== "fullScreen" && videoFullscreen() && managedWindowFullscreen) {
+   managedWindowFullscreen = false;
+   videoFullscreen.set(false);
+  }
+ });
  let player: VideoRef | undefined, disposed = false, lastSaved = 0, lastPlayback: Playback | null = null, ended = "", wheel = 0, lastWheel = 0;
  const candidates = () => tab() === "关注"
   ? subscriptions().map(item => ({ id:item.seriesId, title:item.title, cover:item.cover, episodes:item.episodes, tags:[] }))
@@ -67,12 +99,12 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
   right: () => player?.seek(Math.min(duration(),position()+5)), left: () => player?.seek(Math.max(0,position()-5)),
   m: () => muted.set(!muted()),
  }, {when:"notEditing"});
- cleanup(() => { disposed = true; flush(); feed.cancel(); cancelPlayback(); });
+ cleanup(() => { disposed = true; stopModeListener?.(); setFullscreen(false); flush(); feed.cancel(); cancelPlayback(); });
  if(props.recommend)void changeTab("推荐");
  function Action(action: { icon: IconName; label: string; active?: boolean; onPress: () => void; disabled?: boolean }) {
   return <View class="items-center gap-0.5"><IconButton icon={action.icon} label={action.label} active={action.active} media size={48} onPress={action.onPress} disabled={action.disabled} /><Text class="text-xs text-media-foreground">{action.label}</Text></View>;
  }
- function Surface() { return <View onMouseEnter={()=>hovered.set(true)} onMouseLeave={()=>hovered.set(false)} testID={props.recommend ? "recommendation-page" : "global-player"} class="flex-1 relative overflow-hidden bg-media-background" onWheel={event => {
+ function Surface() { return <View onMouseEnter={()=>hovered.set(true)} onMouseMove={()=>{if(!hovered())hovered.set(true);}} onMouseLeave={()=>hovered.set(false)} testID={props.recommend ? "recommendation-page" : "global-player"} class="flex-1 relative overflow-hidden bg-media-background" onWheel={event => {
   if (!props.recommend || Math.abs(event.delta.x) > Math.abs(event.delta.y) || panel()) return;
   const now = Date.now(); if (now-lastWheel < 900) return;
   wheel += event.delta.y * (event.deltaMode === "lines" ? 30 : 1);
@@ -80,7 +112,7 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
  }}>
   <If when={!!current()?.cover && !ready()}><Image src={current()?.cover ?? ""} class="absolute inset-0 opacity-25" style={{width:"100%",height:"100%",objectFit:"contain"}} /></If>
   <If when={ready()}>{item => <Video testID="global-video" ref={node => player=node} src={item().mediaUrl} paused={paused()} muted={muted()} rate={rate()} controls={false} class="absolute inset-0" style={{width:"100%",height:"100%"}}
-   onLoad={event => {duration.set(event.duration);failure.set("");lastPlayback=item();const initial=item().initialPositionSec;const resume=transferPosition>0?transferPosition:initial;transferPosition=0;if(typeof resume === "number" && resume>0 && resume<event.duration-2)player?.seek(resume);}}
+   onLoad={event => {duration.set(event.duration);failure.set("");lastPlayback=item();const initial=item().initialPositionSec;if(typeof initial === "number" && initial>0 && initial<event.duration-2)player?.seek(initial);}}
    onProgress={event => {position.set(event.currentTime);duration.set(event.duration);lastPlayback=item();if(Date.now()-lastSaved>2500){lastSaved=Date.now();flush();}}}
    onError={event => { failure.set("本集播放失败，请重试或切换短剧");paused.set(true); }}
    onEnd={() => {const active=item();if(ended===active.episode.episodeId)return;ended=active.episode.episodeId;flush();const next=active.episodes.find(ep=>ep.index===active.episode.index+1);if(preferences().autoPlayNext && next)selectEpisode(next.episodeId);else paused.set(true);}}
@@ -144,5 +176,5 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
    <If when={panel()==="settings"}><Text class="text-sm text-foreground">倍速</Text><View class="flex-row gap-2 flex-wrap"><Each of={[0.75,1,1.25,1.5,2]}>{value=><FilterChip label={`${value()}x`} selected={rate()===value()} onPress={()=>rate.set(value())} />}</Each></View><Text class="text-sm text-foreground">清晰度</Text><View class="flex-row gap-2 flex-wrap"><Each of={["auto","1080p","720p"] as const}>{value=><FilterChip label={value()==="auto"?"自动":value()} selected={quality()===value()} onPress={()=>{const active=ready();quality.set(value());if(active){flush();void startPlayback(active.seriesId,active.episode.episodeId,value(),position());panel.set(null);}}} />}</Each></View></If>
   </Sheet>
  </View>; }
- return <View class="flex-1"><If when={!fullscreen()}><Surface /></If><If when={fullscreen()}><Window id="video-fullscreen" title="视频播放" defaultMode="fullScreen" titleBar={{style:"hidden"}} onOpenChange={event=>{if(!event.open && fullscreen())toggleFullscreen();}} ><Surface /></Window></If></View>;
+ return <View class="flex-1"><Surface /></View>;
 }
