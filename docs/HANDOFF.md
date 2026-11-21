@@ -1,5 +1,11 @@
 # 开发交接
 
+## 2026-11-21 接入 `video_tab` 兜底修复 `EMPTY_RESPONSE`
+
+1. **问题定位**：上游 `multi_video_model/player/v1` 与旧 `v1/` 在当前全量节点均返回 HTTP 200 空包（`content-length: 0`）。
+2. **修复**：参考 `jackotom/hongguo-drama` 最新实现，[playback-v5.js](../service/vendor/hongguo/playback-v5.js) 新增 `allowEmptyBody` 支持 GET 空请求体签名；[app-source.js](../service/vendor/hongguo/app-source.js) 新增 `videoTabRequest()` 接入 `GET /reading/bookapi/video_tab/multi_video_model/v1/`，在 `player/v1` 主/备节点返回 `EMPTY_RESPONSE` 时自动切换 `video_tab`。
+3. **验证**：Node 42/42、`./tools/nsh check`、`App.test.tsx` 9/9、`session.test.tsx` 1/1 及 11 部在线剧集（含《宴律，你的白月光回国了》与热播榜前 10 部）`prepare()` 解密全部通过（`hevc 1080p`）。
+
 ## 2026-11-21 全屏播放无操作自动隐藏 UI
 
 1. **全屏空闲自动隐藏控制栏**（[GlobalPlayer.tsx](../src/features/player/GlobalPlayer.tsx)）：

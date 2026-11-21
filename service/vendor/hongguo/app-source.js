@@ -30,6 +30,7 @@ const PLAYER_HOSTS = [
     'api3-normal.fqnovel.com',
 ];
 const VIDEO_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/';
+const VIDEO_TAB_API = 'https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/';
 const PLAYER_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/player/v1';
 const SEARCH_API = 'https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v';
 const VIDEO_UA = 'com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
@@ -183,6 +184,27 @@ function playbackRequest(payload, identity, videoId = '', host = PLAYER_HOSTS[0]
     Object.assign(headers, { 'Content-Type': 'application/json; charset=UTF-8',
         'Content-Encoding': 'gzip', 'x-ss-stub': signature['x-ss-stub'] });
     return { url, body, headers, method: 'POST' };
+}
+
+function videoTabRequest(identity, videoId, host = PLAYER_HOSTS[0]) {
+    // video_tab belongs to the player family; generic Argus/Ladon signing is rejected with an empty body.
+    const signed = signPlaybackV5({
+        base: `https://${host}/reading/bookapi/video_tab/multi_video_model/v1/`,
+        values: {
+            aid: '8662', app_name: 'novelread', version_code: '74332', version_name: '7.4.3.32',
+            channel: 'vivo_8662_64', device_platform: 'android', device_type: 'PGT-AN10',
+            os_version: '12', update_version_code: '74332',
+            iid: identity.iid, cdid: identity.cdid, device_id: identity.device_id,
+            video_id: String(videoId), video_id_type: '0', device_level: '1',
+            need_all_video_definition: '1', need_mp4_align: '0', use_os_player: '0',
+            video_platform: '1024', source: '0', from_video_id: '',
+        },
+        body: null,
+        allowEmptyBody: true,
+        now: Date.now(),
+    });
+    return { url: signed.url, body: null, method: 'GET',
+        headers: { ...signed.headers, 'User-Agent': VIDEO_UA.replace(DEVICE.version_code, '73932'), Accept: 'application/json' } };
 }
 
 function parseSearchInteger(value) {
@@ -447,16 +469,25 @@ async function fetchAppPlayUrlFresh(vid, options) {
     try {
         let response;
         let lastError;
-        const callApi = async (useV5, host, closeConnection = false) => {
-            const signed = playbackRequest(payload, identity, useV5 ? vid : '', host);
+        const callApi = async (mode, host, closeConnection = false) => {
+            const signed = mode === 'tab'
+                ? videoTabRequest(identity, vid, host)
+                : playbackRequest(payload, identity, mode === 'v5' ? vid : '', host);
             if (closeConnection) signed.headers.Connection = 'close';
             return requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
         };
-        for (let i = 0; i < PLAYER_HOSTS.length; i += 1) {
+        const attempts = [
+            ['v5', PLAYER_HOSTS[0], false],
+            ['v5', PLAYER_HOSTS[1], true],
+            ['tab', PLAYER_HOSTS[0], true],
+            ['tab', PLAYER_HOSTS[1], true],
+        ];
+        for (let i = 0; i < attempts.length; i += 1) {
             throwIfAborted(signal);
             if (i > 0 && deadline - Date.now() < 1000) break;
             try {
-                response = await callApi(true, PLAYER_HOSTS[i], i > 0);
+                const [mode, host, closeConn] = attempts[i];
+                response = await callApi(mode, host, closeConn);
                 throwIfAborted(signal);
                 break;
             } catch (error) {
@@ -476,16 +507,16 @@ async function fetchAppPlayUrlFresh(vid, options) {
                 }
             }
             throwIfAborted(signal);
-            if (deadline - Date.now() >= 1500) {
+            for (const mode of ['tab', 'v5', 'v1']) {
+                if (deadline - Date.now() < 1500) break;
                 try {
-                    response = await callApi(true, PLAYER_HOSTS[0], true);
+                    response = await callApi(mode, PLAYER_HOSTS[0], true);
+                    throwIfAborted(signal);
+                    break;
                 } catch (error) {
                     throwIfAborted(signal);
                     lastError = error;
                     if (error.code === 'ERR_CANCELED' || error.code !== 'EMPTY_RESPONSE') throw error;
-                    if (deadline - Date.now() >= 1500) {
-                        response = await callApi(false, PLAYER_HOSTS[0], true);
-                    }
                 }
             }
         }
