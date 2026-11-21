@@ -3,24 +3,20 @@ import { Button as BaseButton } from "nsh/base";
 import { Button, DramaListRow, FilterChip, PosterCard, SearchField, StatusView } from "../../ui/controls";
 import { catalog, refreshCatalog } from "../../catalog-store";
 import { hasService } from "../../service-client";
-import { isFavorite, isSubscribed, subscriptions, toggleFavorite, toggleSubscription } from "../../stores/user-data";
+import { isSubscribed, subscriptions, toggleSubscription } from "../../stores/user-data";
 import {
   categoryError, categoryFilters, categoryHasMore, categoryItems, categoryLoading, categorySelectors,
-  clearOnlineSearch, closeDetail, detailState, discoverQuery, discoverSection, loadCategoryFeed,
-  loadRankFeed, onlineError, onlineHasMore, onlineLoading, onlineResults, openDramaDetail,
-  rankError, rankHasMore, rankItems, rankLoading, rankType, runOnlineSearch,
-  type RankType, type SearchDramaItem,
+  clearOnlineSearch, discoverQuery, discoverSearchMode, discoverSection, loadCategoryFeed,
+  loadRankFeed, onlineError, onlineHasMore, onlineLoading, onlineResults,
+  rankError, rankHasMore, rankItems, rankLoading, rankOuterTab, rankSelectors, rankSubTab, rankSubTitle, runOnlineSearch,
+  type SearchDramaItem,
 } from "./discover-store";
 
 export type { SearchDramaItem } from "./discover-store";
 
 type SearchMode = "catalog" | "online" | "app-category" | "app-rank";
-const RANK_TYPES = [
-  { id: "hot-drama", label: "全部" },
-  { id: "hot-real-drama", label: "真人剧" },
-  { id: "hot-comic-drama", label: "漫剧" },
-  { id: "hot-ai-drama", label: "AI剧" },
-] satisfies { id: RankType; label: string }[];
+// 热门搜词：均为 App 分类接口真实存在的题材/角色枚举，点击即按该词在线搜索。
+const HOT_SEARCHES = ["都市", "逆袭", "悬疑", "甜宠", "古装", "战神"];
 
 function getShanghaiDates() {
   const result: { key: string; label: string; week: string }[] = [];
@@ -44,6 +40,7 @@ function PageTab(props: { label: string; selected: boolean; onPress: () => void 
 export function DiscoverView(props: {
   mode: "recommend" | "discover" | "rank" | "new" | "calendar";
   onPlay: (seriesId: string, episodeId?: string) => void;
+  onHome: (seriesId: string, title: string) => void;
   onCalendar?: () => void;
   onNew?: () => void;
 }) {
@@ -55,11 +52,20 @@ export function DiscoverView(props: {
     if (hasService() && props.mode === "discover") return "app-category";
     return "catalog";
   };
-  const searchMode = signal<SearchMode>(defaultMode());
+  const isDiscover = props.mode === "discover";
+  const localSearchMode = signal<SearchMode>(defaultMode());
+  const searchMode = (): SearchMode => isDiscover ? (discoverSearchMode() === "online" ? "online" : defaultMode()) : localSearchMode();
+  const setSearchMode = (next: SearchMode) => {
+    if (isDiscover) discoverSearchMode.set(next);
+    else localSearchMode.set(next);
+  };
   const dates = getShanghaiDates();
   const selectedDate = signal(dates[7].key);
   const filtersExpanded = signal(true);
   const availableWidth = signal(1100);
+  const availableHeight = signal(760);
+  // 筛选面板最多占视口高度的 45%（封顶 460、保底 120），窗口再小也让结果区保有一席之地。
+  const filtersMaxHeight = () => Math.max(120, Math.min(460, Math.floor(availableHeight() * 0.45)));
   const gridColumns = () => Math.max(1, Math.floor((availableWidth() + 16) / 160));
   const posterWidth = () => Math.max(100, Math.floor(availableWidth() / gridColumns()) - 16);
   const isGrid = () => props.mode !== "rank" && props.mode !== "calendar";
@@ -105,10 +111,16 @@ export function DiscoverView(props: {
     else if (searchMode() === "app-rank") void loadRankFeed(true);
   };
   const search = () => {
-    if (hasService() && query().trim()) { searchMode.set("online"); void runOnlineSearch(false); }
-    else { searchMode.set(defaultMode()); if (searchMode() === "app-category") void loadCategoryFeed(false); }
+    if (hasService() && query().trim()) { setSearchMode("online"); void runOnlineSearch(false); }
+    else { setSearchMode(defaultMode()); if (searchMode() === "app-category") void loadCategoryFeed(false); }
   };
-  const openDetail = (seriesId: string, title: string) => void openDramaDetail(seriesId, title);
+  const backToFilters = () => {
+    query.set("");
+    clearOnlineSearch();
+    setSearchMode(defaultMode());
+    if (searchMode() === "app-category" && !categoryItems().length && !categoryLoading()) void loadCategoryFeed(false);
+  };
+  const openHome = (seriesId: string, title: string) => props.onHome(seriesId, title);
   const selectFilter = (type: string, value: string) => {
     if (type === "genre") void loadCategoryFeed(false, { genre: value });
     else if (type === "sort") void loadCategoryFeed(false, { sort: value });
@@ -129,14 +141,28 @@ export function DiscoverView(props: {
     if (type === "online_time") return filters.onlineTime === value;
     return false;
   };
+  const currentRankGroup = () => rankSelectors().find(g => g.id === rankOuterTab()) ?? rankSelectors()[0];
+  const currentRankSub = () => currentRankGroup()?.items.find(s => s.id === rankSubTab()) ?? currentRankGroup()?.items[0];
+  const selectRankOuter = (outerId: string) => {
+    const group = rankSelectors().find(g => g.id === outerId);
+    if (!group || !group.items.length) return;
+    const prevLabel = currentRankSub()?.label;
+    const nextSub = group.items.find(s => s.label === prevLabel)
+      ?? group.items.find(s => s.id.includes("hot_play"))
+      ?? group.items[0];
+    setSearchMode("app-rank");
+    void loadRankFeed(false, { outerTab: group.id, subTab: nextSub.id });
+  };
   const subtitle = (item: SearchDramaItem) => item.tags?.length ? item.tags.slice(0, 4).join(" · ") : `全${item.episodes}集`;
 
-  return <View class="flex-1 gap-4" onLayout={({ bounds }) => availableWidth.set(Math.max(1, bounds.size.width))}>
+  return <View class="flex-1 gap-4" onLayout={({ bounds }) => { availableWidth.set(Math.max(1, bounds.size.width)); availableHeight.set(Math.max(1, bounds.size.height)); }}>
     <View class="flex-row items-center justify-between gap-4 flex-wrap">
       <View class="flex-row items-center gap-4">
         <Text class="text-xl font-semibold text-foreground">{props.mode === "rank" ? "排行榜" : props.mode === "new" || props.mode === "calendar" ? "新剧" : "找剧"}</Text>
         <If when={props.mode === "rank"}>
-          <View class="flex-row gap-2"><Each of={RANK_TYPES}>{item => <PageTab label={item().label} selected={rankType() === item().id} onPress={() => { searchMode.set("app-rank"); void loadRankFeed(false, item().id); }} />}</Each></View>
+          <View class="flex-row gap-2">
+            <Each of={rankSelectors()}>{group => <PageTab label={group().label} selected={rankOuterTab() === group().id} onPress={() => selectRankOuter(group().id)} />}</Each>
+          </View>
         </If>
         <If when={props.mode === "new" || props.mode === "calendar"}>
           <View class="flex-row gap-2">
@@ -147,130 +173,21 @@ export function DiscoverView(props: {
       </View>
       <If when={props.mode === "discover" || props.mode === "recommend"}>
         <View style={{ width: Math.min(480, Math.max(240, availableWidth() * 0.45)) }}>
-          <SearchField value={query()} onChange={value => query.set(value)} placeholder="输入剧名 / 关键词" submitLabel="搜索" onSubmit={search} onClear={() => { query.set(""); clearOnlineSearch(); searchMode.set(defaultMode()); }} />
+          <SearchField value={query()} onChange={value => query.set(value)} placeholder="输入剧名 / 关键词" submitLabel="搜索" onSubmit={search} onClear={backToFilters} />
         </View>
       </If>
       <If when={props.mode === "new"}>
         <View class="flex-row gap-1"><FilterChip label="全部" selected={filterSelected("gender", "")} onPress={() => selectFilter("gender", "")} /><Each of={categorySelectors().find(group => group.type === "gender")?.items ?? []}>{item => <FilterChip label={item().label} selected={filterSelected("gender", item().id)} onPress={() => selectFilter("gender", item().id)} />}</Each></View>
       </If>
     </View>
-      <If when={detailState().kind !== "closed"}>
-        <View class="bg-card border border-border rounded-xl p-4 gap-3">
-          <If when={detailState().kind === "loading"}>
-            <View class="flex-row items-center justify-between">
-              <Text class="text-sm text-muted-foreground">正在加载剧集详情…</Text>
-              <Button label="关闭" variant="ghost" size="sm" onPress={closeDetail} />
-            </View>
-          </If>
-          <If when={detailState().kind === "error"}>
-            {() => {
-              const st = detailState();
-              const msg = st.kind === "error" ? st.message : "";
-              const sid = st.kind === "error" ? st.seriesId : "";
-              return (
-                <View class="flex-row items-center justify-between gap-2">
-                  <Text class="text-sm text-destructive">{msg}</Text>
-                  <View class="flex-row gap-2">
-                    <Button label="直接播放" variant="primary" size="sm" onPress={() => props.onPlay(sid)} />
-                    <Button label="关闭" variant="ghost" size="sm" onPress={closeDetail} />
-                  </View>
-                </View>
-              );
-            }}
-          </If>
-          <If when={detailState().kind === "ready"}>
-            {() => {
-              const st = detailState();
-              if (st.kind !== "ready") return <View />;
-              const d = st.detail;
-              return (
-                <View class="gap-3">
-                  <View class="flex-row gap-4">
-                    <If when={!!d.cover}>
-                      <Image src={d.cover} style={{ width: 84, height: 120, borderRadius: 8 }} />
-                    </If>
-                    <View class="flex-1 gap-1.5">
-                      <View class="flex-row items-center justify-between">
-                        <Text class="text-base font-semibold text-foreground">{d.title}</Text>
-                        <Button label="关闭" variant="ghost" size="sm" onPress={closeDetail} />
-                      </View>
-                      <Text class="text-xs text-muted-foreground">
-                        全{d.episodes.length}集 {d.tags.length ? `· ${d.tags.slice(0, 4).join(" / ")}` : ""}
-                      </Text>
-                      <If when={!!d.intro}>
-                        <Text class="text-xs text-muted-foreground">{d.intro}</Text>
-                      </If>
-                      <View class="flex-row items-center gap-2 pt-1">
-                        <Button
-                          label="立即播放第1集"
-                          variant="primary"
-                          size="sm"
-                          onPress={() => {
-                            closeDetail();
-                            props.onPlay(d.seriesId, d.episodes[0]?.episodeId);
-                          }}
-                        />
-                        <Button
-                          label={isFavorite(d.seriesId) ? "已收藏" : "收藏"}
-                          variant="outline"
-                          size="sm"
-                          onPress={() =>
-                            toggleFavorite({
-                              seriesId: d.seriesId,
-                              title: d.title,
-                              cover: d.cover,
-                              episodes: d.episodes.length,
-                            })
-                          }
-                        />
-                        <Button
-                          label={isSubscribed(d.seriesId) ? "已追更" : "追更"}
-                          variant="outline"
-                          size="sm"
-                          onPress={() =>
-                            toggleSubscription({
-                              seriesId: d.seriesId,
-                              title: d.title,
-                              cover: d.cover,
-                              episodes: d.episodes.length,
-                            })
-                          }
-                        />
-                      </View>
-                    </View>
-                  </View>
-                  <If when={d.episodes.length > 0}>
-                    <View class="gap-1.5 pt-1 border-t border-border">
-                      <Text class="text-xs text-muted-foreground">选集快捷播放（共 {d.episodes.length} 集）</Text>
-                      <List
-                        horizontal
-                        each={d.episodes}
-                        keyExtractor={ep => ep.episodeId}
-                        estimatedItemSize={72}
-                        style={{ height: 36 }}
-                      >
-                        {ep => (
-                          <Button
-                            label={`第${ep().index}集`}
-                            variant="outline"
-                            size="sm"
-                            class="mr-1.5"
-                            onPress={() => {
-                              closeDetail();
-                              props.onPlay(d.seriesId, ep().episodeId);
-                            }}
-                          />
-                        )}
-                      </List>
-                    </View>
-                  </If>
-                </View>
-              );
-            }}
-          </If>
-        </View>
-      </If>
-
+    <If when={searchMode() === "online" && (props.mode === "discover" || props.mode === "recommend")}>
+      <View class="flex-row items-center gap-2 flex-wrap">
+        <Text class="text-sm text-foreground">搜索 "{query().trim()}"</Text>
+        <Button label="返回筛选" variant="ghost" size="sm" onPress={backToFilters} />
+        <Text class="text-xs text-muted-foreground ml-2">热门:</Text>
+        <Each of={HOT_SEARCHES}>{kw => <FilterChip label={kw()} selected={query().trim() === kw()} onPress={() => { query.set(kw()); setSearchMode("online"); void runOnlineSearch(false); }} />}</Each>
+      </View>
+    </If>
     <If when={props.mode === "calendar"}>
       <View class="gap-4">
         <Scroll horizontal scrollbar={false} style={{ height: 60 }}>
@@ -289,7 +206,7 @@ export function DiscoverView(props: {
         <Button label={filtersExpanded() ? "收起筛选" : "展开筛选"} size="sm" onPress={() => filtersExpanded.set(!filtersExpanded())} />
       </View>
       <If when={filtersExpanded() && searchMode() === "app-category"}>
-        <Scroll style={{ maxHeight: 460 }}>
+        <Scroll style={{ maxHeight: filtersMaxHeight(), minHeight: 120, flexShrink: 1 }}>
           <View class="gap-1">
             <Each of={categorySelectors()} key={group => group.type}>{group => <View class="flex-row items-start gap-3">
               <Text class="text-xs text-muted-foreground w-10 pt-2">{group().label}</Text>
@@ -307,39 +224,38 @@ export function DiscoverView(props: {
           <View class="flex-1 flex-row flex-wrap gap-1"><FilterChip label="全部" selected={section() === "全部"} onPress={() => section.set("全部")} /><Each of={sections()} key={item => item.name}>{item => <FilterChip label={item().name} selected={section() === item().name} onPress={() => section.set(item().name)} />}</Each></View>
         </View>
       </If>
-      <If when={searchMode() === "online"}>
-        <View class="flex-row items-center justify-between"><Text class="text-sm text-muted-foreground">搜索结果</Text><Button label="返回片库" size="sm" onPress={() => { query.set(""); clearOnlineSearch(); searchMode.set(defaultMode()); }} /></View>
-      </If>
     </If>
 
-    <View class="flex-1 flex-row gap-5">
+    <View class="flex-1 flex-row gap-5" style={{ minHeight: 0, flexShrink: 1 }}>
       <If when={props.mode === "rank"}>
-        <View class="w-24 gap-2 pt-1">
-          <BaseButton class="rounded-lg bg-selection px-3 py-3 items-center" onPress={() => { searchMode.set("app-rank"); refresh(); }}><Text class="text-sm font-semibold text-primary">热播榜</Text></BaseButton>
-          <Button label="刷新" size="sm" onPress={refresh} disabled={loading()} />
+        <View class="w-40 shrink-0 gap-1">
+          <Each of={currentRankGroup()?.items ?? []}>{item => <BaseButton onPress={() => { setSearchMode("app-rank"); void loadRankFeed(false, { outerTab: rankOuterTab(), subTab: item().id }); }} class={rankSubTab() === item().id ? "rounded-lg bg-selection px-3 h-10 flex-row items-center" : "rounded-lg px-3 h-10 flex-row items-center hover:bg-muted"}>
+            <Text class={rankSubTab() === item().id ? "text-sm font-medium text-primary" : "text-sm text-muted-foreground"}>{item().label}</Text>
+          </BaseButton>}</Each>
+          <View class="pt-2"><Button label="刷新" size="sm" variant="outline" onPress={refresh} disabled={loading()} /></View>
         </View>
       </If>
       <View class="flex-1 gap-3">
-        <If when={props.mode === "rank"}><View class="flex-row items-center justify-between"><Text class="text-base font-semibold text-foreground">热播榜</Text><Text class="text-xs text-muted-foreground">{RANK_TYPES.find(item => item.id === rankType())?.label ?? "全部"}</Text></View></If>
+        <If when={props.mode === "rank"}><View class="flex-row items-center justify-between gap-3"><Text class="text-base font-semibold text-foreground">{currentRankSub()?.label ?? "热播榜"}</Text><Text class="text-xs text-muted-foreground" style={{ numberOfLines: 1 }}>{rankSubTitle() || currentRankGroup()?.label || "全部"}</Text></View></If>
         <If when={loading() && rows().length === 0}><StatusView kind="loading" message="正在加载…" /></If>
         <If when={!!error()}>
           <View class="gap-2"><StatusView kind="error" message={error()} actionLabel="重试" onAction={refresh} />
-            <If when={searchMode() !== "catalog"}><Button label="浏览公开片库" size="sm" onPress={() => { searchMode.set("catalog"); void refreshCatalog(); }} /></If>
+            <If when={searchMode() !== "catalog"}><Button label="浏览公开片库" size="sm" onPress={() => { setSearchMode("catalog"); void refreshCatalog(); }} /></If>
           </View>
         </If>
         <If when={!loading() && !error() && rows().length === 0}>
           <StatusView kind="empty" message={props.mode === "calendar" ? "暂无本地预约" : "没有匹配的短剧"} />
         </If>
         <If when={rows().length > 0 && isGrid()}>
-          <List testID="discover-grid" each={rows()} keyExtractor={item => item.id} numColumns={gridColumns()} estimatedItemSize={posterWidth() * 1.5 + 84} class="flex-1">
+          <List testID="discover-grid" each={rows()} keyExtractor={item => item.id} numColumns={gridColumns()} estimatedItemSize={posterWidth() * 1.5 + 92} class="flex-1">
             {item => <View style={{ paddingRight: 16, paddingBottom: 20 }}>
-              <PosterCard width={posterWidth()} title={item().title} cover={item().cover} subtitle={subtitle(item())} badge={item().score ? `${item().score}分` : item().badge} actionLabel="播放" actionTestID={`play-${item().id}`} onAction={() => props.onPlay(item().id)} secondaryLabel="详情" onSecondary={() => openDetail(item().id, item().title)} />
+              <PosterCard width={posterWidth()} title={item().title} cover={item().cover} subtitle={subtitle(item())} badge={item().score ? `${item().score}分` : item().badge} tagsLine={item().tags?.slice(0, 4).join(" · ")} actionLabel="播放" actionTestID={`play-${item().id}`} onAction={() => props.onPlay(item().id)} onHome={() => openHome(item().id, item().title)} />
             </View>}
           </List>
         </If>
         <If when={rows().length > 0 && !isGrid()}>
           <List testID="discover-list" each={rows()} keyExtractor={item => item.id} estimatedItemSize={150} class="flex-1">
-            {(item, index) => <DramaListRow rank={props.mode === "rank" ? index() + 1 : undefined} title={item().title} cover={item().cover} subtitle={`${item().episodes ? `全${item().episodes}集` : "短剧"}${item().tags?.length ? ` · ${item().tags?.slice(0, 4).join(" · ")}` : ""}`} rating={item().score ? `${item().score}分` : item().badge} actionLabel="播放" actionTestID={`play-${item().id}`} onAction={() => props.onPlay(item().id)} secondaryLabel={props.mode === "calendar" ? "取消预约" : "详情"} onSecondary={() => props.mode === "calendar" ? toggleSubscription({ seriesId: item().id, title: item().title, cover: item().cover, episodes: item().episodes }) : openDetail(item().id, item().title)} />}
+            {(item, index) => <DramaListRow rank={props.mode === "rank" ? index() + 1 : undefined} title={item().title} cover={item().cover} subtitle={`${item().episodes ? `全${item().episodes}集` : "短剧"}${item().tags?.length ? ` · ${item().tags?.slice(0, 4).join(" · ")}` : ""}`} rating={item().score ? `${item().score}分` : item().badge} actionLabel="播放" actionTestID={`play-${item().id}`} onAction={() => props.onPlay(item().id)} secondaryLabel={props.mode === "calendar" ? "取消预约" : "详情"} onSecondary={() => props.mode === "calendar" ? toggleSubscription({ seriesId: item().id, title: item().title, cover: item().cover, episodes: item().episodes }) : openHome(item().id, item().title)} />}
           </List>
         </If>
         <If when={hasMore()}><Button label={loading() ? "加载中…" : "加载更多"} size="sm" disabled={loading()} onPress={loadMore} /></If>

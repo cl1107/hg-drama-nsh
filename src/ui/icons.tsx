@@ -29,7 +29,7 @@ import sun from "../assets/icons/sun.svg";
 import moon from "../assets/icons/moon.svg";
 const icons = {"play": play, "pause": pause, "compass": compass, "search": search, "cup": cup, "spark": spark, "history": history, "bell": bell, "download": download, "settings": settings, "user": user, "chevron-left": chevron_left, "chevron-right": chevron_right, "chevron-up": chevron_up, "chevron-down": chevron_down, "heart": heart, "star": star, "volume": volume, "mute": mute, "expand": expand, "share": share, "close": close, "list": list, "info": info, "refresh": refresh, "sun": sun, "moon": moon};
 export type IconName = keyof typeof icons;
-export function Icon(props: { name: IconName; size?: number; color?: "foreground" | "muted-foreground" | "primary" | "media-foreground" }) {
+export function Icon(props: { name: IconName; size?: number; color?: "foreground" | "muted-foreground" | "primary" | "primary-foreground" | "media-foreground" }) {
  return <Image src={icons[props.name]} style={{ width: props.size ?? 20, height: props.size ?? 20, tintColor: token(props.color ?? "muted-foreground") }} />;
 }
 export function IconButton(props: { icon: IconName; label: string; onPress: () => void; active?: boolean; media?: boolean; size?: number; disabled?: boolean; testID?: string }) {

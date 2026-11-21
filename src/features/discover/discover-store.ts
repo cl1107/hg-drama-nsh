@@ -22,12 +22,21 @@ export interface SelectorGroup {
   items: SelectorOption[];
 }
 
+export interface DramaCelebrity {
+  nickname: string;
+  role: string;
+  avatar: string;
+}
+
 export interface DramaDetail {
   seriesId: string;
   title: string;
   cover: string;
   intro: string;
   tags: string[];
+  episodeText: string;
+  recordNumber: string;
+  celebrities: DramaCelebrity[];
   episodes: { episodeId: string; index: number }[];
 }
 
@@ -76,7 +85,89 @@ export const categoryFilters = signal<{
 });
 
 // App rank state
+export interface RankSubOption {
+  id: string;
+  label: string;
+  subTitle?: string;
+}
+export interface RankOuterGroup {
+  id: string;
+  label: string;
+  items: RankSubOption[];
+}
+const DEFAULT_RANK_SELECTORS: RankOuterGroup[] = [
+  {
+    id: "all",
+    label: "全部",
+    items: [
+      { id: "ranklist_hot_sc", label: "推荐榜" },
+      { id: "ranklist_hot_play_sc", label: "热播榜" },
+      { id: "ranklist_prestige", label: "臻果榜" },
+      { id: "ranklist_subscribe", label: "预约榜" },
+      { id: "ranklist_new_rank_sc", label: "新剧榜" },
+      { id: "ranklist_hot_search_sc", label: "热搜榜" },
+      { id: "ranklist_chase_update", label: "追更榜" },
+      { id: "ranklist_must_watch", label: "必看榜" },
+      { id: "ranklist_followed", label: "收藏榜" },
+    ],
+  },
+  {
+    id: "series_album",
+    label: "系列剧",
+    items: [
+      { id: "series_album_hot_sc", label: "推荐榜" },
+      { id: "series_album_new_rank", label: "新季榜" },
+    ],
+  },
+  {
+    id: "comic_series_rank",
+    label: "漫剧",
+    items: [
+      { id: "comic_series_hot_rank", label: "推荐榜" },
+      { id: "comic_series_hot_play", label: "热播榜" },
+      { id: "comic_series_new_rank", label: "新剧榜" },
+      { id: "comic_series_subscribe", label: "预约榜" },
+      { id: "comic_series_hot_search", label: "热搜榜" },
+    ],
+  },
+  {
+    id: "human",
+    label: "真人剧",
+    items: [
+      { id: "human_hot_sc", label: "推荐榜" },
+      { id: "human_hot_play", label: "热播榜" },
+      { id: "human_new_rank", label: "新剧榜" },
+      { id: "human_subscribe", label: "预约榜" },
+      { id: "human_hot_search", label: "热搜榜" },
+      { id: "human_must_watch", label: "必看榜" },
+      { id: "human_followed", label: "收藏榜" },
+    ],
+  },
+  {
+    id: "ai_playlet",
+    label: "AI剧",
+    items: [
+      { id: "ai_playlet_hot_sc", label: "推荐榜" },
+      { id: "ai_playlet_hot_play", label: "热播榜" },
+      { id: "ai_playlet_new_rank", label: "新剧榜" },
+      { id: "ai_playlet_subscribe", label: "预约榜" },
+      { id: "ai_playlet_hot_search", label: "热搜榜" },
+      { id: "ai_playlet_must_watch", label: "必看榜" },
+      { id: "ai_playlet_followed", label: "收藏榜" },
+    ],
+  },
+];
+const LEGACY_RANK_MAP: Record<RankType, { outerTab: string; subTab: string }> = {
+  "hot-drama": { outerTab: "all", subTab: "ranklist_hot_play_sc" },
+  "hot-real-drama": { outerTab: "human", subTab: "human_hot_play" },
+  "hot-comic-drama": { outerTab: "comic_series_rank", subTab: "comic_series_hot_play" },
+  "hot-ai-drama": { outerTab: "ai_playlet", subTab: "ai_playlet_hot_play" },
+};
 export const rankType = signal<RankType>("hot-drama");
+export const rankOuterTab = signal("all");
+export const rankSubTab = signal("ranklist_hot_play_sc");
+export const rankSubTitle = signal("");
+export const rankSelectors = signal<RankOuterGroup[]>(DEFAULT_RANK_SELECTORS);
 export const rankItems = signal<SearchDramaItem[]>([]);
 export const rankLoading = signal(false);
 export const rankError = signal("");
@@ -166,8 +257,23 @@ export async function openDramaDetail(seriesId: string, title: string) {
   const gen = ++detailGen;
   detailState.set({ kind: "loading", title });
   try {
-    const detail = await servicePost<DramaDetail>("/detail", { seriesId }, controller.signal);
+    const raw = await servicePost<Partial<DramaDetail>>("/detail", { seriesId }, controller.signal);
     if (gen !== detailGen || controller.signal.aborted) return;
+    const detail: DramaDetail = {
+      seriesId,
+      title: typeof raw.title === "string" ? raw.title : title,
+      cover: typeof raw.cover === "string" ? raw.cover : "",
+      intro: typeof raw.intro === "string" ? raw.intro : "",
+      tags: Array.isArray(raw.tags) ? raw.tags.filter(t => typeof t === "string") : [],
+      episodeText: typeof raw.episodeText === "string" ? raw.episodeText : "",
+      recordNumber: typeof raw.recordNumber === "string" ? raw.recordNumber : "",
+      celebrities: Array.isArray(raw.celebrities)
+        ? raw.celebrities.filter(c => c && typeof c.nickname === "string" && !!c.nickname.trim())
+        : [],
+      episodes: Array.isArray(raw.episodes)
+        ? raw.episodes.filter(e => e && typeof e.episodeId === "string" && Number.isInteger(e.index))
+        : [],
+    };
     detailState.set({ kind: "ready", detail });
   } catch (e) {
     if (gen !== detailGen || controller.signal.aborted) return;
@@ -235,8 +341,15 @@ export async function loadCategoryFeed(append = false, overrideFilters?: Partial
   }
 }
 
-export async function loadRankFeed(append = false, nextType?: RankType) {
-  if (nextType) rankType.set(nextType);
+export async function loadRankFeed(append = false, next?: RankType | { outerTab: string; subTab: string }) {
+  if (typeof next === "string") {
+    rankType.set(next);
+    rankOuterTab.set(LEGACY_RANK_MAP[next].outerTab);
+    rankSubTab.set(LEGACY_RANK_MAP[next].subTab);
+  } else if (next && typeof next === "object") {
+    rankOuterTab.set(next.outerTab);
+    rankSubTab.set(next.subTab);
+  }
   rankController?.abort();
   const controller = new AbortController();
   rankController = controller;
@@ -248,6 +361,8 @@ export async function loadRankFeed(append = false, nextType?: RankType) {
   try {
     const res = await servicePost<{
       items: SearchDramaItem[];
+      selectors?: RankOuterGroup[];
+      subTitle?: string;
       hasMore: boolean;
       nextOffset: number;
       sessionId: string;
@@ -255,6 +370,8 @@ export async function loadRankFeed(append = false, nextType?: RankType) {
       "/discover/rank",
       {
         rankType: rankType(),
+        outerTab: rankOuterTab(),
+        subTab: rankSubTab(),
         offset,
         sessionId,
         limit: 20,
@@ -262,6 +379,8 @@ export async function loadRankFeed(append = false, nextType?: RankType) {
       controller.signal,
     );
     if (gen !== rankGen || controller.signal.aborted) return;
+    if (res.selectors?.length) rankSelectors.set(res.selectors);
+    if (typeof res.subTitle === "string") rankSubTitle.set(res.subTitle);
     rankHasMore.set(Boolean(res.hasMore));
     rankOffset.set(res.nextOffset ?? 0);
     rankSessionId.set(res.sessionId ?? "");

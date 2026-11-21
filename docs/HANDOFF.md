@@ -1,5 +1,74 @@
 # 开发交接
 
+## 2026-11-21 全屏播放无操作自动隐藏 UI
+
+1. **全屏空闲自动隐藏控制栏**（[GlobalPlayer.tsx](../src/features/player/GlobalPlayer.tsx)）：
+   - 全屏播放状态下无操作 3 秒（`FULLSCREEN_IDLE_HIDE_MS = 3000`）后自动隐藏覆盖层 UI（顶部返回/标题、右侧操作栏、底部简介与播放控制栏）并将光标设为 `cursor: "none"`。
+   - 鼠标移动（`onMouseMove`）、点击、滚轮或播放快捷键操作后立即恢复 UI 显示并重置 3 秒计时；增加 150ms 同坐标防抖，避免 UI 卸载触发的同坐标重排事件把控制栏误弹回。
+   - 打开选集/设置抽屉面板时暂停自动隐藏，关闭面板或退出全屏时自动恢复/清理计时器；非全屏保持原 hover 显隐行为。
+2. **验证**：新增 `fullscreen player auto-hides overlay UI when idle and restores it on mouse move` 回归用例（[App.test.tsx](../App.test.tsx)），`./tools/nsh check`、`./tools/nsh build`、`App.test.tsx` 9/9、`session.test.tsx` 1/1 全部通过。如需同步到 `/Applications/红果短剧-NSH.app`，运行 `./tools/package-macos` 重打包。
+
+## 2026-11-21 排行榜全量榜单 / 播放稳定性修复 / 播放排查 Skill / README 更新
+
+1. **排行榜多榜单补全**（[service/discover.cjs](../service/discover.cjs)、[service/server.cjs](../service/server.cjs)、[discover-store.ts](../src/features/discover/discover-store.ts)、[DiscoverView.tsx](../src/features/discover/DiscoverView.tsx)）：
+   - 核实 `bookmall/cell/change/v` 返回的 `cell_selector` 真实树结构，新增 `parseRankSelectors()` 解析顶部 5 大分类（全部 / 系列剧 / 漫剧 / 真人剧 / AI剧）及其全部子榜单（全部下 9 榜：推荐榜、热播榜、臻果榜、预约榜、新剧榜、热搜榜、追更榜、必看榜、收藏榜；系列剧 2 榜；漫剧 5 榜；真人剧 7 榜；AI剧 7 榜），同时兼容旧 `rankType` 参数。
+   - 实测 `ranklist_hot_sc`、`ranklist_prestige`、`ranklist_hot_search_sc`、`series_album_new_rank` 均正常返回 10 条真实剧目与 5 组 selectors。
+2. **播放取源稳定性修复**（[service/vendor/hongguo/app-source.js](../service/vendor/hongguo/app-source.js)、[service/playback.cjs](../service/playback.cjs)）：
+   - 改为优先复用进程内已注册匿名设备 `getPlaybackDevice()`（避免每次取源重注册导致新设备同步延迟或空响应），扩大官方主机池 `PLAYER_HOSTS` 至 5 个节点（`sinfonlineb` / `sinfonlinea` / `sinfonlinec` / `api5-normal` / `api3-normal`），遇 `EMPTY_RESPONSE` 时依次轮询，全部空响应后再换设备重注册并兜底旧接口 `VIDEO_API`。
+   - `prepare()` 下载媒体时若主 `variant` 失败（非取消），自动顺延尝试同清晰度其余 `variant`。
+   - 实测热播榜前 10 部剧第 1 集（10/10）与《宴律，你的白月光回国了》第 1、2 集（2/2）共 12 集全部取源、解密通过。
+   - 构建号 8（[nsh.json](../nsh.json)）已打包并替换安装到 `/Applications/红果短剧-NSH.app`，严格签名校验通过。
+3. **沉淀播放排查 Skill & 更新 README**：
+   - 新增项目 Skill：[.agents/skills/hg-playback-debug/SKILL.md](../.agents/skills/hg-playback-debug/SKILL.md)。
+   - 参考 `yangbin1322/hongguo-player` 风格重写 [README.md](../README.md)，仅描述本仓库已真实实现的功能与命令。
+
+## 2026-11-21 找剧搜索结果返回保持 & 标题 hover 气泡全称
+
+1. **搜索结果页进入主页/播放后返回保持结果页**（[DiscoverView.tsx](../src/features/discover/DiscoverView.tsx)）：此前 `searchMode` 为组件局部 signal，离开「找剧」卸载后重建重置为筛选页。现将 `discover` 模式的搜索态持久化到 [discover-store.ts](../src/features/discover/discover-store.ts) `discoverSearchMode`；进入剧集主页或播放器再返回仍停留在搜索结果页，点「返回筛选」或清空搜索框才切回筛选页（并按需补载分类）。
+2. **找剧/列表标题 hover 展示全称**（[controls.tsx](../src/ui/controls.tsx)）：NSH `tooltip` 需传入 `<Tooltip>` 元素而非裸字符串（裸字符串无气泡样式）。新增 `textTooltip()` 使用 `nsh/base` `Tooltip`（`delay={300}`、`maxWidth: 320`、卡片背景与边框）包裹 `PosterCard` 与 `DramaListRow` 标题。
+3. **验证**：新增 `discover search results persist when returning from drama home` 回归测试，App 8/8、session 1/1、`./tools/nsh check`、`./tools/nsh build` 通过。
+
+## 2026-11-21 侧栏层级缩进（展开态）
+
+用户复核展开态侧栏：分组标签「发现/我的」（px-2）比收起按钮图标（px-3）更靠左、子项又与收起按钮同轴。调整（[controls.tsx](../src/ui/controls.tsx) `SidebarItem` + [App.tsx](../App.tsx)）：
+- 「发现/我的」标签 `pl-3`：与收起按钮图标同轴（12px）。
+- 子项展开态 `pl-5 pr-3`（图标 20px、选中胶囊随之右缩），收起态维持 `px-3` 整列同轴不变。
+- 主题/用户/设置随 SidebarItem 一致缩进。App 7/7、detector 无发现；构建号 7 已替换 `/Applications/红果短剧-NSH.app`。
+- 注意区分：`./tools/dev` 开发实例窗口与安装版同名同图标，用户可能看混；dev 窗口热重载当前源码。
+
+## 2026-11-21 侧栏图标列垂直对齐
+
+收起态侧栏三处图标中线不一致（导航项 21px / 收起按钮 26px / 主题按钮 18px）。新增 [controls.tsx](../src/ui/controls.tsx) `SidebarIconButton`，与 `SidebarItem` 同参构造（`px-3 h-10`、18px 图标、`self-start`），收起/展开切换与主题切换均改用——整列图标中线统一为 21px，由构造保证不再漂移。App 7/7 通过，detector 无发现；构建号 6 已替换 `/Applications/红果短剧-NSH.app`。
+
+## 2026-11-21 筛选面板挤压结果区修复
+
+根因：NSH flexbox 默认不收缩（"nothing shrinks unless flexShrink says so"），找剧页筛选面板 `Scroll` 固定 `maxHeight: 460` 且 flexShrink 0，窗口变小或筛选内容多时把结果网格整个挤出窗口（且不可滚动）。修复（[DiscoverView.tsx](../src/features/discover/DiscoverView.tsx)）：
+- 筛选面板高度自适应视口：`maxHeight = min(460, 视口高×45%)`（保底 120），并设 `flexShrink: 1`——空间不足时面板压缩、内部滚动，结果区始终保有一席之地。
+- 结果容器补 `minHeight: 0, flexShrink: 1`。
+- 无头测试的 `shows` 不考虑裁剪，无法自动断言此视觉 bug（已实验验证）；保留小窗口冒烟用例（App 7/7、服务 38/38、session 1/1、探针 2/2 通过）。构建号 5 已替换 `/Applications/红果短剧-NSH.app`（替换前优雅退出了正在运行的旧实例），实机验收：缩小窗口后筛选面板内部可滚、结果网格始终可见。
+
+## 2026-11-21 UI 融合改版（无标题栏/海报悬浮/剧集主页/排行榜重排）
+
+1. **去除系统标题栏**：[nsh.json](../nsh.json) 增加 `"window": { "titleBar": { "style": "hidden" } }`；[App.tsx](../App.tsx) 侧栏顶部 36px 与内容区顶部 24px 设 `desktop={{ windowDrag: true }}` 拖拽区（避开 macOS 红绿灯），内容延伸至窗口顶。
+2. **侧栏收起/展开改图标**：`sidebar-toggle` IconButton（收起 ‹ / 展开 ›），收起后各项靠 `tooltip` 显示全称；主题切换按钮收起态也保留。
+3. **海报悬浮双按钮**（[controls.tsx](../src/ui/controls.tsx) `PosterCard`）：hover 显示「播放」（主色胶囊）与「主页」（白胶囊）；封面底部 scrim 左侧标签、右侧评分/角标；标题与列表行 `tooltip` 展示全称，榜单前三名名次红色高亮。
+4. **新增剧集主页**（[DramaHomeView.tsx](../src/features/discover/DramaHomeView.tsx)，页面键「剧集主页」）：返回、大封面、集数徽章+标签、简介、播放第1集/点赞/收藏/追更/下载、主演头像（官网 `celebrities`）、备案号（官网 `record_number`）、选集 flex-wrap 网格（>60 集折叠为「显示全部」，打开新剧自动重置）。[service/playback.cjs](../service/playback.cjs) `details()` 补 `episodeText`/`recordNumber`/`celebrities`（均来自官网页面真实字段，实测无播放/收藏数故未展示）。找剧/排行榜「详情」均跳转主页，原内联详情面板已移除。
+5. **找剧搜索态头部**：`搜索 "关键词"` + 返回筛选 + 热门搜词胶囊（`HOT_SEARCHES`，全部为 App 分类接口真实枚举词，点击即搜）。
+6. **排行榜重排**：左侧 160px 榜单分类列表（全部/真人剧/漫剧/AI剧，仅 API 支持的热播榜），顶部旧 tab 移除；右侧行样式加封面/名次/评分/详情。
+7. **间距规范**：页面 p-6/gap-4、区块 gap-3、胶囊 px-3 py-1、行 py-3；测试更新为 6 项（新增排行榜→剧集主页回归），App 6/6、服务 38/38、session 1/1、探针 2/2 通过；构建号 4 已替换 `/Applications/红果短剧-NSH.app`（严格签名校验通过）。
+
+待实机验收：无标题栏后拖拽/红绿灯位置、悬浮双按钮、主页各区块与长剧（800+ 集）选集折叠、排行榜左列切换。
+
+## 2026-11-21 Enter 搜索 / 防息屏 / NSH 0.6.1 重打包
+
+1. **搜索按 Enter 无反应已修复**（[src/ui/controls.tsx](../src/ui/controls.tsx)）：NSH `Input` 原生支持 `onSubmit`/`submitBehavior`，此前 `SearchField` 未接线。现已传入 `onSubmit`、`submitBehavior="submit"`（回车提交且保持焦点）与 `returnKeyType="search"`；找剧页和历史页搜索框同时受益。
+
+2. **播放期间不再息屏**：NSH 无防休眠 API，走系统层。新增 [service/keep-awake.cjs](../service/keep-awake.cjs)：`POST /keep-awake {active}` 在服务端起停 `caffeinate -d -i -s -w <服务pid>`（防显示休眠+空闲休眠+AC 下系统休眠；`-w` 绑定服务进程，服务被强杀断言自动消失；非 macOS 静默降级）。TSX 侧 [GlobalPlayer.tsx](../src/features/player/GlobalPlayer.tsx) 用 `effect` 监听「已就绪且未暂停且无错误」，变化即上报，cleanup 固定释放。`tools/package-macos` 已把 `keep-awake.cjs` 加入打包列表；server 测试注入 mock 断言，不真起 caffeinate。
+
+3. **NSH 升级 0.6.1 (2f51d86)** 并重打包：官方 macOS arm64 发行档 SHA-256 `ee1aed2a4d111fe90e6cceca4b9d5f834c9e11cfda525f8be984261a329c06de` 校验一致；`./tools/nsh check`、`./tools/nsh build`、`App.test.tsx` 5/5、Node 服务套件 38/38 通过。构建号 3 已替换到 `/Applications/红果短剧-NSH.app`，严格签名校验通过。注意：App 离线测试依赖 `.tmp/service-config.ts` 存在真实 baseUrl/token（测试网络按其 mock，本环境已写入测试值，dev 启动会自动覆盖）。
+
+待实机验收：找剧页输入关键词回车出结果；播放中静置超过系统息屏时限屏幕不灭、暂停后正常息屏。下一步维持「取源稳定性」（`EMPTY_RESPONSE` 为上游对特定分集的空响应行为）。
+
 ## 2026-11-19 播放器全屏白屏/空白修复
 
 修复历史播放等页面进入「短剧播放」后点击全屏导致主区域变空的问题：

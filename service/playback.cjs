@@ -18,6 +18,16 @@ async function details(seriesId, signal) {
   cover:typeof detail.series_cover==='string'?detail.series_cover:'',
   intro:typeof detail.series_intro==='string'?detail.series_intro:'',
   tags:Array.isArray(detail.tags)?detail.tags.filter(t=>typeof t==='string'):[],
+  episodeText:typeof detail.episode_right_text==='string'?detail.episode_right_text:'',
+  recordNumber:typeof detail.record_number==='string'?detail.record_number:'',
+  celebrities:Array.isArray(detail.celebrities)?detail.celebrities
+    .filter(c=>c&&typeof c.nickname==='string'&&c.nickname.trim())
+    .slice(0,8)
+    .map(c=>({
+      nickname:c.nickname,
+      role:typeof c.sub_title==='string'?c.sub_title:'',
+      avatar:typeof c.avatar==='string'?c.avatar:''
+    })):[],
   episodes:detail.vid_list.map((episodeId,index)=>({episodeId,index:index+1}))
  };
 }
@@ -29,9 +39,20 @@ async function prepare({seriesId,episodeId,signal,quality='auto'}) {
  const variants=(model.variants || [model]).filter(v=>['h264','hevc'].includes(v.codec));
  if(!variants.length)throw Object.assign(new Error('本集没有兼容 H.264/HEVC 片源'),{code:'NO_COMPATIBLE_SOURCE'});
  // The upstream model already enforces the quality tier; prefer AVC within that tier.
- const variant=variants.find(v=>v.codec==='h264') || variants[0];
- const response=await bytes(variant.url,{domains:['qznovelvod.com','fqnovelvod.com','douyinvod.com'],headers:{'User-Agent':variant.userAgent},signal,maxBytes:256*1024*1024,timeout:90000});
- if(response.status!==200)throw Object.assign(new Error(`媒体请求失败（HTTP ${response.status}）`),{code:'MEDIA_HTTP'});
+ const ordered=[...variants.filter(v=>v.codec==='h264'),...variants.filter(v=>v.codec!=='h264')];
+ let variant,response,lastError;
+ for(const candidate of ordered){
+  if(signal?.aborted)throw Object.assign(new Error('已取消'),{code:'ERR_CANCELED'});
+  try{
+   const res=await bytes(candidate.url,{domains:['qznovelvod.com','fqnovelvod.com','douyinvod.com'],headers:{'User-Agent':candidate.userAgent},signal,maxBytes:256*1024*1024,timeout:90000});
+   if(res.status===200 && res.data?.length){variant=candidate;response=res;break;}
+   lastError=Object.assign(new Error(`媒体请求失败（HTTP ${res.status}）`),{code:'MEDIA_HTTP'});
+  }catch(error){
+   if(error?.code==='ERR_CANCELED' || signal?.aborted)throw error;
+   lastError=error;
+  }
+ }
+ if(!response || !variant)throw lastError || Object.assign(new Error('媒体请求失败'),{code:'MEDIA_HTTP'});
  const data=variant.contentKey ? decryptMp4Buffer(response.data,Buffer.from(variant.contentKey,'hex')) : response.data;
  return {...detail,episode,codec:variant.codec,quality:variant.quality,encrypted:!!variant.contentKey,data};
 }

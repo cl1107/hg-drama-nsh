@@ -1,4 +1,4 @@
-import { signal, View, Text, Video, Image, List, cleanup, keymap, Clipboard, token, type VideoRef } from "nsh";
+import { signal, View, Text, Video, Image, List, cleanup, effect, keymap, Clipboard, token, type VideoRef } from "nsh";
 import { currentWindow, isAvailable, type WindowMode } from "nsh/desktop";
 import { Button as BaseButton, Slider, Sheet } from "nsh/base";
 import { Button, FilterChip } from "../../ui/controls";
@@ -10,6 +10,7 @@ import { createRecommendationFeed, type Recommendation, type RecommendationChann
 
 const videoFullscreen = signal(false);
 export const isVideoFullscreen = () => videoFullscreen();
+const FULLSCREEN_IDLE_HIDE_MS = 3000;
 
 function time(value: number) { const seconds = Math.max(0, Math.floor(value)); return `${String(Math.floor(seconds / 60)).padStart(2,"0")}:${String(seconds % 60).padStart(2,"0")}`; }
 export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: string) => void; onFind: () => void; onBack?: () => void }) {
@@ -20,11 +21,37 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
  const quality = signal<QualityOption>(preferences().defaultQuality);
  const hidden = new Set<string>();
  const hovered = signal(false);
+ const fullscreenControlsVisible = signal(true);
  const hostWindow = isAvailable ? currentWindow() : null;
  let previousWindowMode: WindowMode = "normal";
  let managedWindowFullscreen = false;
+ let player: VideoRef | undefined, disposed = false, lastSaved = 0, lastPlayback: Playback | null = null, ended = "", wheel = 0, lastWheel = 0;
+ let idleTimer: ReturnType<typeof setTimeout> | undefined;
+ let lastMousePos: { x: number; y: number } | null = null;
+ let hiddenAt = 0;
  const fullscreen = () => videoFullscreen();
- const showControls = () => hovered() || panel() !== null;
+ const clearIdleTimer = () => {
+  if (idleTimer !== undefined) {
+   clearTimeout(idleTimer);
+   idleTimer = undefined;
+  }
+ };
+ const scheduleFullscreenHide = () => {
+  clearIdleTimer();
+  if (!fullscreen() || panel() !== null || disposed) return;
+  idleTimer = setTimeout(() => {
+   idleTimer = undefined;
+   if (!fullscreen() || panel() !== null || disposed) return;
+   hiddenAt = Date.now();
+   fullscreenControlsVisible.set(false);
+  }, FULLSCREEN_IDLE_HIDE_MS);
+ };
+ const revealFullscreenControls = () => {
+  if (!fullscreen()) return;
+  if (!fullscreenControlsVisible()) fullscreenControlsVisible.set(true);
+  scheduleFullscreenHide();
+ };
+ const showControls = () => panel() !== null || (fullscreen() ? fullscreenControlsVisible() : hovered());
  const setFullscreen = (next: boolean) => {
   if (next === videoFullscreen()) return;
   if (next) {
@@ -36,9 +63,12 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
    } else {
     managedWindowFullscreen = false;
    }
+   fullscreenControlsVisible.set(true);
    videoFullscreen.set(true);
    return;
   }
+  clearIdleTimer();
+  fullscreenControlsVisible.set(true);
   videoFullscreen.set(false);
   if (managedWindowFullscreen && hostWindow?.state()?.mode === "fullScreen") {
    hostWindow.setMode(previousWindowMode === "fullScreen" ? "normal" : previousWindowMode);
@@ -49,10 +79,11 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
  const stopModeListener = hostWindow?.on("modeChange", event => {
   if (event.mode !== "fullScreen" && videoFullscreen() && managedWindowFullscreen) {
    managedWindowFullscreen = false;
+   clearIdleTimer();
+   fullscreenControlsVisible.set(true);
    videoFullscreen.set(false);
   }
  });
- let player: VideoRef | undefined, disposed = false, lastSaved = 0, lastPlayback: Playback | null = null, ended = "", wheel = 0, lastWheel = 0;
  const candidates = () => tab() === "关注"
   ? subscriptions().map(item => ({ id:item.seriesId, title:item.title, cover:item.cover, episodes:item.episodes, tags:[] }))
   : feed.items();
@@ -95,21 +126,60 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
   finally { busyAction.set(false); }
  };
  keymap.bind({
-  escape: () => {if(fullscreen())toggleFullscreen();}, f: () => {if(ready() && isAvailable)toggleFullscreen();}, space: togglePlay, down: () => void step(1), up: () => void step(-1),
-  right: () => player?.seek(Math.min(duration(),position()+5)), left: () => player?.seek(Math.max(0,position()-5)),
-  m: () => muted.set(!muted()),
+  escape: () => {if(fullscreen())toggleFullscreen();}, f: () => {if(ready() && isAvailable)toggleFullscreen();}, space: () => { revealFullscreenControls(); togglePlay(); }, down: () => { revealFullscreenControls(); void step(1); }, up: () => { revealFullscreenControls(); void step(-1); },
+  right: () => { revealFullscreenControls(); player?.seek(Math.min(duration(),position()+5)); }, left: () => { revealFullscreenControls(); player?.seek(Math.max(0,position()-5)); },
+  m: () => { revealFullscreenControls(); muted.set(!muted()); },
  }, {when:"notEditing"});
- cleanup(() => { disposed = true; stopModeListener?.(); setFullscreen(false); flush(); feed.cancel(); cancelPlayback(); });
+ // 全屏无操作时自动隐藏控制 UI，打开面板或退出全屏时暂停/清除计时。
+ effect(() => {
+  const isFs = fullscreen();
+  const hasPanel = panel() !== null;
+  if (!isFs) {
+   clearIdleTimer();
+   fullscreenControlsVisible.set(true);
+   return;
+  }
+  if (hasPanel) {
+   clearIdleTimer();
+   return;
+  }
+  if (fullscreenControlsVisible()) {
+   scheduleFullscreenHide();
+  }
+ });
+ // 播放期间请服务持有防息屏断言，暂停/出错/退出即释放。
+ const playing = () => ready() !== null && !paused() && !playbackError();
+ effect(() => { const active = playing(); void servicePost("/keep-awake", { active }).catch(() => {}); });
+ cleanup(() => { disposed = true; clearIdleTimer(); stopModeListener?.(); setFullscreen(false); flush(); feed.cancel(); cancelPlayback(); void servicePost("/keep-awake", { active: false }).catch(() => {}); });
  if(props.recommend)void changeTab("推荐");
  function Action(action: { icon: IconName; label: string; active?: boolean; onPress: () => void; disabled?: boolean }) {
   return <View class="items-center gap-0.5"><IconButton icon={action.icon} label={action.label} active={action.active} media size={48} onPress={action.onPress} disabled={action.disabled} /><Text class="text-xs text-media-foreground">{action.label}</Text></View>;
  }
- function Surface() { return <View onMouseEnter={()=>hovered.set(true)} onMouseMove={()=>{if(!hovered())hovered.set(true);}} onMouseLeave={()=>hovered.set(false)} testID={props.recommend ? "recommendation-page" : "global-player"} class="flex-1 relative overflow-hidden bg-media-background" onWheel={event => {
-  if (!props.recommend || Math.abs(event.delta.x) > Math.abs(event.delta.y) || panel()) return;
-  const now = Date.now(); if (now-lastWheel < 900) return;
-  wheel += event.delta.y * (event.deltaMode === "lines" ? 30 : 1);
-  if (Math.abs(wheel)>80) { lastWheel=now; const direction=wheel>0?1:-1;wheel=0;void step(direction); }
- }}>
+ function Surface() { return <View
+  onMouseEnter={() => { hovered.set(true); revealFullscreenControls(); }}
+  onMouseMove={event => {
+   if (!hovered()) hovered.set(true);
+   const pos = event.pagePosition;
+   const samePos = lastMousePos !== null && lastMousePos.x === pos.x && lastMousePos.y === pos.y;
+   lastMousePos = { x: pos.x, y: pos.y };
+   if (fullscreen()) {
+    if (!fullscreenControlsVisible() && samePos && Date.now() - hiddenAt < 150) return;
+    revealFullscreenControls();
+   }
+  }}
+  onMouseLeave={() => hovered.set(false)}
+  onPressDown={() => revealFullscreenControls()}
+  onMouseUp={() => revealFullscreenControls()}
+  style={{ cursor: fullscreen() && !showControls() ? "none" : "default" }}
+  testID={props.recommend ? "recommendation-page" : "global-player"}
+  class="flex-1 relative overflow-hidden bg-media-background"
+  onWheel={event => {
+   revealFullscreenControls();
+   if (!props.recommend || Math.abs(event.delta.x) > Math.abs(event.delta.y) || panel()) return;
+   const now = Date.now(); if (now-lastWheel < 900) return;
+   wheel += event.delta.y * (event.deltaMode === "lines" ? 30 : 1);
+   if (Math.abs(wheel)>80) { lastWheel=now; const direction=wheel>0?1:-1;wheel=0;void step(direction); }
+  }}>
   <If when={!!current()?.cover && !ready()}><Image src={current()?.cover ?? ""} class="absolute inset-0 opacity-25" style={{width:"100%",height:"100%",objectFit:"contain"}} /></If>
   <If when={ready()}>{item => <Video testID="global-video" ref={node => player=node} src={item().mediaUrl} paused={paused()} muted={muted()} rate={rate()} controls={false} class="absolute inset-0" style={{width:"100%",height:"100%"}}
    onLoad={event => {duration.set(event.duration);failure.set("");lastPlayback=item();const initial=item().initialPositionSec;if(typeof initial === "number" && initial>0 && initial<event.duration-2)player?.seek(initial);}}

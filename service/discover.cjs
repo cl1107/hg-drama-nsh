@@ -18,6 +18,14 @@ const RANK_TYPES = {
   'hot-ai-drama': { outer: 'ai_playlet', sub: 'ai_playlet_hot_play', contentTypes: [1004] },
 };
 
+const OUTER_CONTENT_TYPES = {
+  all: [1, 1004],
+  series_album: [1, 1004],
+  human: [1],
+  comic_series_rank: [1004],
+  ai_playlet: [1004],
+};
+
 const SELECTOR_LABELS = {
   genre: '类型',
   category_dim_theme: '题材',
@@ -199,9 +207,46 @@ function parseCategoryResponse(payload) {
   };
 }
 
-function parseRankResponse(payload, rankType = 'hot-drama') {
-  const rankCfg = RANK_TYPES[rankType];
+function parseRankSelectors(cellSelector) {
+  const outerItems = Array.isArray(cellSelector?.outer_row?.items) ? cellSelector.outer_row.items : [];
+  const groups = [];
+  for (const outer of outerItems) {
+    const id = str(outer?.selector_item_id);
+    const label = str(outer?.show_name);
+    if (!id || !label) continue;
+    const subItems = Array.isArray(outer?.sub_cell_selector?.outer_row?.items) ? outer.sub_cell_selector.outer_row.items : [];
+    const items = [];
+    for (const sub of subItems) {
+      const subId = str(sub?.selector_item_id);
+      const subLabel = str(sub?.show_name);
+      if (subId && subLabel) items.push({ id: subId, label: subLabel, subTitle: str(sub?.sub_title) });
+    }
+    if (items.length) groups.push({ id, label, items });
+  }
+  return groups;
+}
+
+function resolveRankConfig(input = 'hot-drama') {
+  if (input && typeof input === 'object') {
+    if (input.outerTab && input.subTab) {
+      if (!/^[a-z0-9_]+$/i.test(input.outerTab) || !/^[a-z0-9_]+$/i.test(input.subTab)) {
+        throw Object.assign(new Error('不支持的榜单类型'), { code: 'APP_INPUT' });
+      }
+      return {
+        outer: input.outerTab,
+        sub: input.subTab,
+        contentTypes: OUTER_CONTENT_TYPES[input.outerTab] || [1, 1004],
+      };
+    }
+    return resolveRankConfig(input.rankType || 'hot-drama');
+  }
+  const rankCfg = RANK_TYPES[input];
   if (!rankCfg) throw Object.assign(new Error('不支持的榜单类型'), { code: 'APP_INPUT' });
+  return rankCfg;
+}
+
+function parseRankResponse(payload, rankTypeOrOpts = 'hot-drama') {
+  const rankCfg = resolveRankConfig(rankTypeOrOpts);
   if (!payload || typeof payload !== 'object' || Number(payload.code) !== 0) {
     throw Object.assign(new Error('App 榜单返回异常'), { code: 'INVALID_RESPONSE' });
   }
@@ -228,6 +273,8 @@ function parseRankResponse(payload, rankType = 'hot-drama') {
   }
   return {
     items,
+    selectors: parseRankSelectors(view.cell_selector),
+    subTitle: str(child?.sub_title),
     hasMore: view.has_more === true,
     nextOffset: parseSearchInteger(view.next_offset) ?? 0,
     sessionId: str(view.session_id),
@@ -304,9 +351,8 @@ async function browseCategory({
   return parseCategoryResponse(payload);
 }
 
-async function browseRank({ rankType = 'hot-drama', offset = 0, sessionId = '', limit = 20, signal } = {}) {
-  const rankCfg = RANK_TYPES[rankType];
-  if (!rankCfg) throw Object.assign(new Error('不支持的榜单类型'), { code: 'APP_INPUT' });
+async function browseRank({ rankType = 'hot-drama', outerTab = '', subTab = '', offset = 0, sessionId = '', limit = 20, signal } = {}) {
+  const rankCfg = resolveRankConfig(outerTab && subTab ? { outerTab, subTab } : rankType);
   const safeOffset = parseSearchInteger(offset) ?? 0;
   const safeLimit = Math.min(50, Math.max(1, parseSearchInteger(limit) ?? 20));
   const req = signedMetadataRequest(RANK_API, {
@@ -337,7 +383,7 @@ async function browseRank({ rankType = 'hot-drama', offset = 0, sessionId = '', 
     Date.now() + 12000,
     signal,
   );
-  return parseRankResponse(payload, rankType);
+  return parseRankResponse(payload, outerTab && subTab ? { outerTab, subTab } : rankType);
 }
 
 module.exports = {

@@ -8,6 +8,7 @@ const { parseRange } = require('./range.cjs');
 const { searchDramas, browseCategory, browseRank } = require('./discover.cjs');
 const { createQrLogin, pollQrLogin, sendSmsCode, smsLogin, fetchCloudHistory, fetchCloudBookshelf, restoreSession, getAccountStatus, logoutAccount } = require('./auth.cjs');
 const { listDownloads, startDownload, retryDownload, cancelDownload, deleteDownload, clearDownloads, readDownloadedMedia } = require('./downloads.cjs');
+const { setKeepAwake, stopKeepAwake } = require('./keep-awake.cjs');
 
 const ALLOWED_QUALITIES = new Set(['auto', '1080p', '720p', '540p', '480p', '360p']);
 
@@ -28,7 +29,7 @@ async function readJsonBody(req, maxBytes = 4096) {
   }
 }
 
-function createService({ token = crypto.randomBytes(32).toString('hex'), prepareMedia = prepare } = {}) {
+function createService({ token = crypto.randomBytes(32).toString('hex'), prepareMedia = prepare, keepAwake = { setKeepAwake, stopKeepAwake } } = {}) {
   const files = new Map();
   let active;
 
@@ -178,6 +179,8 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
       } else if (url.pathname === '/discover/rank') {
         json(res, 200, await browseRank({
           rankType: input.rankType,
+          outerTab: input.outerTab,
+          subTab: input.subTab,
           offset: input.offset,
           sessionId: input.sessionId,
           limit: input.limit,
@@ -193,6 +196,9 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
         json(res, 200, await smsLogin({ mobile: input.mobile, code: input.code, captcha: input.captcha }, controller.signal));
       } else if (url.pathname === '/auth/logout') {
         json(res, 200, await logoutAccount());
+      } else if (url.pathname === '/keep-awake') {
+        keepAwake.setKeepAwake(input.active === true);
+        json(res, 200, { active: input.active === true });
       } else if (url.pathname === '/downloads/start') {
         const quality = typeof input.quality === 'string' && ALLOWED_QUALITIES.has(input.quality) ? input.quality : 'auto';
         json(res, 200, startDownload({ seriesId: input.seriesId, episodeId: input.episodeId, quality }));
@@ -233,6 +239,7 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
 
   server.on('close', () => {
     active?.abort();
+    keepAwake.stopKeepAwake();
     files.clear();
   });
   return { server, token };

@@ -56,3 +56,18 @@ test('service enforces validation and auth boundaries on detail, search, auth an
  assert.equal(dlList.status,200);
  assert.ok(Array.isArray((await dlList.json()).items));
 });
+test('keep-awake route reflects requested assertion state only for authed clients',async t=>{
+ let requested;
+ const keepAwake={setKeepAwake:active=>{requested=active;},stopKeepAwake:()=>{requested=false;}};
+ const {server}=createService({token:'test-only-secret',prepareMedia:async()=>({title:'test',data:Buffer.from('0123456789')}),keepAwake});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve)); t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const base=`http://127.0.0.1:${server.address().port}`;
+ const headers={Authorization:'Bearer test-only-secret','Content-Type':'application/json'};
+ assert.equal((await fetch(base+'/keep-awake',{method:'POST',body:'{}'})).status,401);
+ const on=await fetch(base+'/keep-awake',{method:'POST',headers,body:JSON.stringify({active:true})});
+ assert.equal(on.status,200); assert.deepEqual(await on.json(),{active:true}); assert.equal(requested,true);
+ const off=await fetch(base+'/keep-awake',{method:'POST',headers,body:JSON.stringify({active:false})});
+ assert.equal(off.status,200); assert.deepEqual(await off.json(),{active:false}); assert.equal(requested,false);
+ const junk=await fetch(base+'/keep-awake',{method:'POST',headers,body:JSON.stringify({active:'yes'})});
+ assert.equal(junk.status,200); assert.deepEqual(await junk.json(),{active:false}); assert.equal(requested,false);
+});

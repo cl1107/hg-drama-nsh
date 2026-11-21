@@ -10,7 +10,7 @@
 const crypto = require('node:crypto');
 const { gzipSync } = require('node:zlib');
 const { setTimeout: delay } = require('node:timers/promises');
-const { registerPlaybackDevice } = require('./playback-device');
+const { getPlaybackDevice, registerPlaybackDevice } = require('./playback-device');
 const { signPlayer } = require('./playback-signature');
 const { signPlaybackV5 } = require('./playback-v5');
 const { abortError, throwIfAborted, boundedSignal, networkFailure } = require('./request-signal');
@@ -22,6 +22,13 @@ const PROCESS_STARTED = Date.now();
 let playbackQueue = Promise.resolve();
 let playbackReadyAt = 0;
 let playbackRejection = null;
+const PLAYER_HOSTS = [
+    'api5-normal-sinfonlineb.fqnovel.com',
+    'api5-normal-sinfonlinea.fqnovel.com',
+    'api5-normal-sinfonlinec.fqnovel.com',
+    'api5-normal.fqnovel.com',
+    'api3-normal.fqnovel.com',
+];
 const VIDEO_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/';
 const PLAYER_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/player/v1';
 const SEARCH_API = 'https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v';
@@ -146,11 +153,11 @@ function helios(khronos) {
 }
 
 function branchOf(url, body, khronos) { const bodyMd5 = body ? crypto.createHash('md5').update(body).digest() : Buffer.alloc(16); const q = sm3(url.split('?')[1]); const iv = getIv(getIv(getIv(0x20230928, q), bodyMd5), le32(khronos)); const low = iv & 15; return low - (((low * 171) >> 9) * 3); }
-function playbackRequest(payload, identity, videoId = '', alternate = false) {
+function playbackRequest(payload, identity, videoId = '', host = PLAYER_HOSTS[0]) {
     // Sign the final query and actual gzip body; other API families retain their original signer.
     if (videoId) {
         const body = gzipSync(Buffer.from(payload));
-        const signed = signPlaybackV5({ base: alternate ? PLAYER_API.replace('sinfonlineb.', 'sinfonlinea.') : PLAYER_API,
+        const signed = signPlaybackV5({ base: `https://${host}/novel/player/multi_video_model/player/v1`,
             values: { aid: '8662', app_name: 'novelread', version_code: '74332', version_name: '7.4.3.32',
                 channel: 'vivo_8662_64', device_platform: 'android', device_type: 'PGT-AN10', os_version: '12',
                 update_version_code: '74332', iid: identity.iid, cdid: identity.cdid, device_id: identity.device_id },
@@ -163,7 +170,7 @@ function playbackRequest(payload, identity, videoId = '', alternate = false) {
     const requestTicket = Date.now(), khronos = Math.floor(requestTicket / 1000);
     const device = { ...PLAYBACK_DEVICE, ...identity };
     const query = pythonUrlEncode({ ...device, ts: String(khronos), _rticket: String(requestTicket) });
-    const url = `${VIDEO_API}?${query}`;
+    const url = `https://${host}/novel/player/multi_video_model/v1/?${query}`;
     const signature = signPlayer({ query, body, ts: khronos });
     const headers = {
         'User-Agent': VIDEO_UA.replace(DEVICE.version_code, device.version_code), Accept: 'application/json; charset=utf-8,application/x-protobuf',
@@ -431,54 +438,58 @@ async function fetchAppPlayUrlFresh(vid, options) {
         mixed_video_id_map: { '1004': [vid] },
         dr_scene: 'player',
     });
-    // Playback identities can be single-use; search/account retain their shared device.
-    let identity = await registerPlaybackDevice(requestJson, { signal: options.signal });
+    // Reuse the process anonymous playback identity first; only refresh on empty responses.
+    let identity = await getPlaybackDevice(requestJson);
     throwIfAborted(options.signal);
-    // Registration has its own 8s budget; it must not consume the model request budget.
-    const deadline = Date.now() + 12000;
-    const request = boundedSignal(options.signal, 12000);
+    const deadline = Date.now() + 15000;
+    const request = boundedSignal(options.signal, 15000);
     const { signal } = request;
     try {
         let response;
-        for (let attempt = 0; attempt < 2; attempt++) {
+        let lastError;
+        const callApi = async (useV5, host, closeConnection = false) => {
+            const signed = playbackRequest(payload, identity, useV5 ? vid : '', host);
+            if (closeConnection) signed.headers.Connection = 'close';
+            return requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
+        };
+        for (let i = 0; i < PLAYER_HOSTS.length; i += 1) {
             throwIfAborted(signal);
-            // Prefer the current API; only an empty response enables one legacy attempt.
-            const signed = playbackRequest(payload, identity, attempt ? '' : vid);
-            if (attempt) signed.headers.Connection = 'close';
+            if (i > 0 && deadline - Date.now() < 1000) break;
             try {
-                try {
-                    response = await requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
-                } catch (error) {
-                    throwIfAborted(signal);
-                    if (attempt || error.code !== 'EMPTY_RESPONSE' || deadline - Date.now() < 1000) throw error;
-                    // An empty primary response can recover on the other official host with the same identity.
-                    const alternate = playbackRequest(payload, identity, vid, true);
-                    response = await requestJson(alternate.url, { method: alternate.method, headers: alternate.headers, data: alternate.body }, deadline, signal);
-                }
+                response = await callApi(true, PLAYER_HOSTS[i], i > 0);
                 throwIfAborted(signal);
                 break;
             } catch (error) {
                 throwIfAborted(signal);
-                if (error.code === 'ERR_CANCELED') throw error;
-                if (attempt || error.code !== 'EMPTY_RESPONSE' || deadline - Date.now() < 1000) throw error;
-                // Keep the legacy attempt even when a fresh registration fails.
-                if (deadline - Date.now() >= 8000) {
-                    try { identity = await registerPlaybackDevice(requestJson, { signal }); }
-                    catch (registrationError) {
-                        throwIfAborted(signal);
-                        if (registrationError.code === 'ERR_CANCELED') throw registrationError;
-                        if (registrationError.code === 'DEVICE_REGISTRATION_FAILED'
-                            && ['BUSINESS_REJECTED', 'HTTP_403', 'HTTP_429'].includes(registrationError.registrationFailure)) throw registrationError;
-                        // Keep the previous identity for other registration failures.
-                    }
-                }
-                throwIfAborted(signal);
-                if (deadline - Date.now() < 1500) throw error;
-                try { await delay(1000, undefined, { signal }); }
-                catch (waitError) { throwIfAborted(signal); throw waitError; }
-                throwIfAborted(signal);
+                lastError = error;
+                if (error.code === 'ERR_CANCELED' || error.code !== 'EMPTY_RESPONSE') throw error;
             }
         }
+        if (!response) {
+            if (deadline - Date.now() >= 8000) {
+                try { identity = await registerPlaybackDevice(requestJson, { signal }); }
+                catch (registrationError) {
+                    throwIfAborted(signal);
+                    if (registrationError.code === 'ERR_CANCELED') throw registrationError;
+                    if (registrationError.code === 'DEVICE_REGISTRATION_FAILED'
+                        && ['BUSINESS_REJECTED', 'HTTP_403', 'HTTP_429'].includes(registrationError.registrationFailure)) throw registrationError;
+                }
+            }
+            throwIfAborted(signal);
+            if (deadline - Date.now() >= 1500) {
+                try {
+                    response = await callApi(true, PLAYER_HOSTS[0], true);
+                } catch (error) {
+                    throwIfAborted(signal);
+                    lastError = error;
+                    if (error.code === 'ERR_CANCELED' || error.code !== 'EMPTY_RESPONSE') throw error;
+                    if (deadline - Date.now() >= 1500) {
+                        response = await callApi(false, PLAYER_HOSTS[0], true);
+                    }
+                }
+            }
+        }
+        if (!response) throw lastError || Object.assign(new Error('App 接口返回空响应（HTTP 200），原因尚未确认'), { code: 'EMPTY_RESPONSE', status: 200 });
         if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
         const entries = response.data?.['1004'] ?? response.data?.video_model_data ?? response.data;
         const entry = entries?.[vid];

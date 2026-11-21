@@ -1,6 +1,14 @@
-import { View, Text, Image, type JSX } from "nsh";
-import { Button as BaseButton, Input } from "nsh/base";
+import { signal, View, Text, Image, type JSX } from "nsh";
+import { Button as BaseButton, Input, Tooltip } from "nsh/base";
 import { Icon, type IconName } from "./icons";
+
+function textTooltip(text: string) {
+  return (
+    <Tooltip delay={300} class="rounded-md bg-card border border-border px-2.5 py-1.5" style={{ maxWidth: 320 }}>
+      <Text class="text-xs text-foreground">{text}</Text>
+    </Tooltip>
+  );
+}
 
 export type ButtonVariant = "primary" | "outline" | "ghost" | "destructive";
 export type ButtonSize = "sm" | "md";
@@ -50,11 +58,33 @@ export function Button(props: {
 export function SidebarItem(props: {
   label: string; shortLabel: string; collapsed: boolean; selected: boolean; onPress: () => void; testID?: string; icon?: IconName;
 }) {
+ // 收起态：图标与收起按钮同轴（px-3）；展开态：子项相对分组标签再右缩一级（pl-5）。
+ const pad = () => (props.collapsed ? "px-3" : "pl-5 pr-3");
  return <BaseButton testID={props.testID} accessibilityLabel={props.label} tooltip={props.collapsed ? props.label : undefined} selected={props.selected} onPress={props.onPress}
-  class={props.selected ? "rounded-lg bg-selection px-3 h-10 flex-row items-center gap-3 focus:border-ring" : "rounded-lg px-3 h-10 flex-row items-center gap-3 hover:bg-muted active:opacity-70 focus:border-ring"}>
+  class={`${pad()} rounded-lg h-10 flex-row items-center gap-3 ${props.selected ? "bg-selection focus:border-ring" : "hover:bg-muted active:opacity-70 focus:border-ring"}`}>
   <Icon name={props.icon ?? "compass"} color={props.selected ? "primary" : "muted-foreground"} size={18} />
   <If when={!props.collapsed}><Text class={props.selected ? "text-sm font-medium text-primary" : "text-sm text-muted-foreground"}>{props.label}</Text></If>
  </BaseButton>;
+}
+
+// 与 SidebarItem 同参（px-3、h-10、18px 图标），保证侧栏图标列垂直中线一致。
+export function SidebarIconButton(props: {
+  icon: IconName;
+  label: string;
+  onPress: () => void;
+  testID?: string;
+}) {
+  return (
+    <BaseButton
+      testID={props.testID}
+      accessibilityLabel={props.label}
+      tooltip={props.label}
+      onPress={props.onPress}
+      class="h-10 flex-row items-center self-start rounded-lg px-3 hover:bg-muted active:opacity-70 focus:border-ring"
+    >
+      <Icon name={props.icon} color="muted-foreground" size={18} />
+    </BaseButton>
+  );
 }
 
 export function PageHeader(props: {
@@ -94,6 +124,9 @@ export function SearchField(props: {
         value={props.value}
         onChange={({ value }) => props.onChange(value)}
         placeholder={props.placeholder}
+        returnKeyType="search"
+        submitBehavior="submit"
+        onSubmit={() => props.onSubmit?.()}
       />
       <If when={!!props.value && !!props.onClear}>
         <Button label="清空" variant="ghost" size="sm" onPress={() => props.onClear?.()} />
@@ -163,16 +196,22 @@ export function DramaListRow(props: {
   secondaryLabel?: string;
   onSecondary?: () => void;
 }) {
+  const topThree = () => props.rank !== undefined && props.rank <= 3;
   return (
     <View class="flex-row items-center gap-4 py-3 px-2 border-b border-border">
       <If when={props.rank !== undefined}>
-        <Text class="w-7 text-center text-base font-semibold text-rating">{String(props.rank ?? "")}</Text>
+        <Text
+          tooltip={props.rank !== undefined ? `第 ${props.rank} 名` : undefined}
+          class={`w-7 text-center text-base font-semibold ${topThree() ? "text-primary" : "text-rating"}`}
+        >{String(props.rank ?? "")}</Text>
       </If>
       <If when={!!props.cover}>
         <Image src={props.cover ?? ""} style={{ width: 68, height: 100, borderRadius: 8 }} />
       </If>
       <View class="flex-1 gap-1.5 py-1">
-        <Text class="text-base font-semibold text-foreground">{props.title}</Text>
+        <View tooltip={textTooltip(props.title)}>
+          <Text class="text-base font-semibold text-foreground" style={{ numberOfLines: 1 }}>{props.title}</Text>
+        </View>
         <Text class="text-xs text-muted-foreground">{props.subtitle}</Text>
         <If when={!!props.rating}>
           <Text class="text-xs font-medium text-rating">{props.rating ?? ""}</Text>
@@ -189,20 +228,56 @@ export function DramaListRow(props: {
 }
 
 export function PosterCard(props: {
-  title: string; cover?: string; subtitle: string; badge?: string; actionLabel: string; actionTestID?: string; onAction: () => void;
-  secondaryLabel?: string; onSecondary?: () => void; width?: number;
+  title: string; cover?: string; subtitle: string; badge?: string; tagsLine?: string; actionLabel: string; actionTestID?: string; onAction: () => void;
+  onHome?: () => void; width?: number;
 }) {
- return <View class="gap-2" style={{ width: props.width ?? 172 }}>
-  <BaseButton testID={props.actionTestID} accessibilityLabel={`${props.actionLabel} ${props.title}`} onPress={props.onAction} class="gap-2 items-stretch rounded-lg active:opacity-80 focus:border-ring">
-   <View class="relative rounded-lg bg-muted overflow-hidden" style={{ width: "100%", aspectRatio: 0.72 }}>
-    <If when={!!props.cover}><Image src={props.cover ?? ""} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></If>
-    <View class="absolute bottom-0 left-0 right-0 bg-media-scrim px-2 py-1.5"><Text class="text-xs text-media-foreground" style={{ numberOfLines: 1 }}>{props.subtitle}</Text></View>
-   </View>
-   <Text class="text-sm text-foreground" style={{ numberOfLines: 1 }}>{props.title}</Text>
-  </BaseButton>
-  <View class="flex-row items-center justify-between">
-   <If when={!!props.badge}><Text class="text-xs font-medium text-rating">{props.badge ?? ""}</Text></If>
-   <If when={!!props.secondaryLabel && !!props.onSecondary}><BaseButton onPress={() => props.onSecondary?.()} accessibilityLabel={`${props.secondaryLabel} ${props.title}`} class="py-1 active:opacity-60"><Text class="text-xs text-muted-foreground">{props.secondaryLabel ?? ""}</Text></BaseButton></If>
-  </View>
- </View>;
+  const hovered = signal(false);
+  const meta = () => props.badge ?? "";
+  return (
+    <View
+      class="gap-2"
+      style={{ width: props.width ?? 172 }}
+      onMouseEnter={() => hovered.set(true)}
+      onMouseLeave={() => hovered.set(false)}
+    >
+      <View class="relative rounded-lg bg-muted overflow-hidden" style={{ width: "100%", aspectRatio: 0.72 }}>
+        <BaseButton
+          testID={props.actionTestID}
+          accessibilityLabel={`${props.actionLabel} ${props.title}`}
+          onPress={props.onAction}
+          class="absolute inset-0 active:opacity-80 focus:border-ring"
+        >
+          <If when={!!props.cover}><Image src={props.cover ?? ""} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></If>
+          <View class="absolute bottom-0 left-0 right-0 bg-media-scrim flex-row items-center justify-between px-2 py-1.5">
+            <Text class="text-xs text-media-foreground" style={{ numberOfLines: 1 }}>{props.subtitle}</Text>
+            <If when={!!meta()}><Text class="text-xs font-medium text-media-foreground">{meta()}</Text></If>
+          </View>
+        </BaseButton>
+        <If when={hovered()}>
+          <View class="absolute inset-0 bg-media-scrim items-center justify-center gap-2">
+            <BaseButton onPress={props.onAction} class="flex-row items-center gap-1.5 rounded-full bg-primary px-5 py-2 active:opacity-80">
+              <Icon name="play" color="primary-foreground" size={14} />
+              <Text class="text-sm font-medium text-primary-foreground">{props.actionLabel}</Text>
+            </BaseButton>
+            <If when={!!props.onHome}>
+              <BaseButton onPress={props.onHome} accessibilityLabel={`主页 ${props.title}`} class="rounded-full bg-background px-5 py-2 active:opacity-80">
+                <Text class="text-sm font-medium text-foreground">主页</Text>
+              </BaseButton>
+            </If>
+          </View>
+        </If>
+      </View>
+      <If when={!!props.onHome}>
+        <BaseButton onPress={() => props.onHome?.()} tooltip={textTooltip(props.title)} class="self-start max-w-full hover:opacity-80 active:opacity-60 focus:border-ring">
+          <Text class="text-sm text-foreground" style={{ numberOfLines: 1 }}>{props.title}</Text>
+        </BaseButton>
+      </If>
+      <If when={!props.onHome}>
+        <View tooltip={textTooltip(props.title)}>
+          <Text class="text-sm text-foreground" style={{ numberOfLines: 1 }}>{props.title}</Text>
+        </View>
+      </If>
+      <If when={!!props.tagsLine}><Text class="text-xs text-muted-foreground" style={{ numberOfLines: 1 }}>{props.tagsLine}</Text></If>
+    </View>
+  );
 }
