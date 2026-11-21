@@ -42,14 +42,6 @@ if (-not (Test-Path $nshExe)) {
   throw "nsh.exe not found. Run: irm https://nsh.dev/install.ps1 | iex"
 }
 
-$cscExe = Get-ChildItem "$env:WINDIR\Microsoft.NET\Framework64\v4.0*" -Filter 'csc.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-if (-not $cscExe) {
-  $cscExe = Get-ChildItem "$env:WINDIR\Microsoft.NET\Framework\v4.0*" -Filter 'csc.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-}
-if (-not $cscExe) {
-  throw ".NET Framework csc.exe not found; cannot compile native Windows launcher."
-}
-
 New-Item -ItemType Directory -Force -Path "$root\.tmp", "$root\.nsh\out" | Out-Null
 $stage = Join-Path $root ".tmp\win-package-$(Get-Random)"
 $outRoot = Join-Path $root '.nsh\out'
@@ -180,12 +172,8 @@ static class Program {
     }
 }
 '@
-  Set-Content -Encoding UTF8 -Path $launcherCs -Value $csSource
   $launcherExe = Join-Path $appDir $origExeName
-  & $cscExe /nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll /out:"$launcherExe" "$launcherCs"
-  if ($LASTEXITCODE -ne 0) {
-    throw "csc.exe failed to compile $origExeName"
-  }
+  Add-Type -TypeDefinition $csSource -Language CSharp -OutputAssembly $launcherExe -OutputType WindowsApplication -ReferencedAssemblies System.Windows.Forms
 
   $zipOut = Join-Path $output 'hg-drama-nsh-windows-x64.zip'
   if (Test-Path $zipOut) { Remove-Item -Force $zipOut }
