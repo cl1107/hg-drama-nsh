@@ -6,6 +6,7 @@ const path = require('node:path');
 const { prepare, details } = require('./playback.cjs');
 const { parseRange } = require('./range.cjs');
 const { searchDramas, browseCategory, browseRank } = require('./discover.cjs');
+const { fetchDanmaku } = require('./danmaku.cjs');
 const { createQrLogin, pollQrLogin, sendSmsCode, smsLogin, fetchCloudHistory, fetchCloudBookshelf, restoreSession, getAccountStatus, logoutAccount } = require('./auth.cjs');
 const { listDownloads, startDownload, retryDownload, cancelDownload, deleteDownload, clearDownloads, readDownloadedMedia } = require('./downloads.cjs');
 const { setKeepAwake, stopKeepAwake } = require('./keep-awake.cjs');
@@ -29,17 +30,146 @@ async function readJsonBody(req, maxBytes = 4096) {
   }
 }
 
-function createService({ token = crypto.randomBytes(32).toString('hex'), prepareMedia = prepare, keepAwake = { setKeepAwake, stopKeepAwake } } = {}) {
-  const files = new Map();
-  let active;
+const MAX_CACHED_EPISODES = 4;
+const MEDIA_CACHE_TTL_MS = 30 * 60 * 1000;
 
-  function registerMediaBuffer(data, host) {
+function cacheKeyOf(seriesId, episodeId, quality) {
+  return seriesId && episodeId ? `${seriesId}:${episodeId}:${quality || 'auto'}` : '';
+}
+
+function raceAbort(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(Object.assign(new Error('已取消'), { code: 'ERR_CANCELED' }));
+  let onAbort;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      onAbort = () => reject(Object.assign(new Error('已取消'), { code: 'ERR_CANCELED' }));
+      signal.addEventListener('abort', onAbort, { once: true });
+    }),
+  ]).finally(() => {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  });
+}
+
+function createService({ token = crypto.randomBytes(32).toString('hex'), prepareMedia = prepare, fetchDanmaku: fetchDanmakuList = fetchDanmaku, keepAwake = { setKeepAwake, stopKeepAwake } } = {}) {
+  const files = new Map();
+  const episodeCache = new Map();
+  let active;
+  let prefetch = null;
+  let closed = false;
+
+  function deleteMediaPath(mediaPath) {
+    const entry = files.get(mediaPath);
+    if (entry?.cacheKey && episodeCache.get(entry.cacheKey) === mediaPath) {
+      episodeCache.delete(entry.cacheKey);
+    }
+    files.delete(mediaPath);
+  }
+
+  function pruneExpiredMedia() {
+    const now = Date.now();
+    for (const [key, value] of files) {
+      if (value.expires <= now) deleteMediaPath(key);
+    }
+  }
+
+  function registerMediaBuffer(data, host, metadata = null, cacheKey = '') {
     const mediaPath = `/media/${crypto.randomBytes(32).toString('hex')}`;
-    for (const [key, value] of files) if (value.expires <= Date.now()) files.delete(key);
-    // Two full episodes at most in this development-only cache.
-    while (files.size >= 2) files.delete(files.keys().next().value);
-    files.set(mediaPath, { data, expires: Date.now() + 30 * 60 * 1000 });
-    return `http://${host}${mediaPath}`;
+    pruneExpiredMedia();
+    if (cacheKey && episodeCache.has(cacheKey)) {
+      deleteMediaPath(episodeCache.get(cacheKey));
+    }
+    while (files.size >= MAX_CACHED_EPISODES) {
+      deleteMediaPath(files.keys().next().value);
+    }
+    files.set(mediaPath, {
+      data,
+      metadata,
+      cacheKey,
+      expires: Date.now() + MEDIA_CACHE_TTL_MS,
+    });
+    if (cacheKey) episodeCache.set(cacheKey, mediaPath);
+    return { mediaPath, mediaUrl: `http://${host}${mediaPath}` };
+  }
+
+  function getCachedMedia(cacheKey, host) {
+    if (!cacheKey) return null;
+    pruneExpiredMedia();
+    const mediaPath = episodeCache.get(cacheKey);
+    if (!mediaPath) return null;
+    const entry = files.get(mediaPath);
+    if (!entry || entry.expires <= Date.now()) {
+      deleteMediaPath(mediaPath);
+      return null;
+    }
+    // Refresh LRU order on cache hit.
+    files.delete(mediaPath);
+    files.set(mediaPath, entry);
+    return entry.metadata ? { ...entry.metadata, mediaUrl: `http://${host}${mediaPath}` } : null;
+  }
+
+  function cancelPrefetch() {
+    if (!prefetch) return;
+    if (prefetch.timer) clearTimeout(prefetch.timer);
+    if (!prefetch.controller.signal.aborted) prefetch.controller.abort();
+    prefetch = null;
+  }
+
+  function schedulePrefetchNext(metadata, quality, host) {
+    if (closed || !metadata || !Array.isArray(metadata.episodes) || !metadata.episode?.episodeId) return;
+    const idx = metadata.episodes.findIndex(ep => ep.episodeId === metadata.episode.episodeId);
+    const nextEp = idx >= 0 ? metadata.episodes[idx + 1] : null;
+    if (!nextEp?.episodeId) return;
+    const nextKey = cacheKeyOf(metadata.seriesId, nextEp.episodeId, quality);
+    if (!nextKey || getCachedMedia(nextKey, host)) return;
+    if (prefetch && prefetch.key === nextKey) return;
+
+    cancelPrefetch();
+    const pfController = new AbortController();
+    const entry = {
+      key: nextKey,
+      controller: pfController,
+      timer: null,
+      promise: null,
+      startNow: null,
+    };
+    entry.startNow = () => {
+      if (entry.promise) return entry.promise;
+      if (entry.timer) {
+        clearTimeout(entry.timer);
+        entry.timer = null;
+      }
+      entry.promise = (async () => {
+        try {
+          const res = await prepareMedia({
+            seriesId: metadata.seriesId,
+            episodeId: nextEp.episodeId,
+            quality,
+            signal: pfController.signal,
+          });
+          if (closed || pfController.signal.aborted) {
+            return { ok: false, error: Object.assign(new Error('已取消'), { code: 'ERR_CANCELED' }) };
+          }
+          const { data, ...nextMeta } = res;
+          const registered = registerMediaBuffer(data, host, nextMeta, nextKey);
+          return { ok: true, payload: { ...nextMeta, mediaUrl: registered.mediaUrl } };
+        } catch (error) {
+          return { ok: false, error };
+        } finally {
+          if (prefetch === entry) prefetch = null;
+        }
+      })();
+      return entry.promise;
+    };
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      if (!closed && prefetch === entry && !pfController.signal.aborted) {
+        void entry.startNow();
+      }
+    }, 150);
+    entry.timer.unref?.();
+    prefetch = entry;
   }
 
   function json(res, status, body) {
@@ -118,10 +248,7 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
     }
 
     if (url.pathname === '/play') {
-      if (active) {
-        json(res, 409, { code: 'BUSY', message: '已有一集正在准备，请稍后重试' });
-        return;
-      }
+      if (active) active.abort();
       const controller = new AbortController();
       active = controller;
       const abort = () => controller.abort();
@@ -133,14 +260,36 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
           throw Object.assign(new Error('请求字段无效'), { code: 'INVALID_REQUEST' });
         }
         const quality = typeof input.quality === 'string' && ALLOWED_QUALITIES.has(input.quality) ? input.quality : 'auto';
-        const result = await prepareMedia({ seriesId: input.seriesId, episodeId: input.episodeId, quality, signal: controller.signal });
-        if (controller.signal.aborted) return;
-        const mediaUrl = registerMediaBuffer(result.data, host);
-        const { data, ...metadata } = result;
-        json(res, 200, { ...metadata, mediaUrl });
+        const requestKey = input.episodeId ? cacheKeyOf(input.seriesId, input.episodeId, quality) : '';
+        const cached = getCachedMedia(requestKey, host);
+        if (cached) {
+          json(res, 200, cached);
+          schedulePrefetchNext(cached, quality, host);
+          return;
+        }
+        let payload;
+        if (requestKey && prefetch && prefetch.key === requestKey) {
+          const currentPrefetch = prefetch;
+          const outcome = await raceAbort(currentPrefetch.startNow(), controller.signal);
+          if (controller.signal.aborted) return;
+          if (!outcome.ok) throw outcome.error;
+          payload = outcome.payload;
+        } else {
+          cancelPrefetch();
+          const result = await prepareMedia({ seriesId: input.seriesId, episodeId: input.episodeId, quality, signal: controller.signal });
+          if (controller.signal.aborted) return;
+          const { data, ...metadata } = result;
+          const finalKey = cacheKeyOf(metadata.seriesId || input.seriesId, metadata.episode?.episodeId || input.episodeId, quality);
+          const { mediaUrl } = registerMediaBuffer(data, host, metadata, finalKey);
+          payload = { ...metadata, mediaUrl };
+        }
+        json(res, 200, payload);
+        schedulePrefetchNext(payload, quality, host);
       } catch (error) {
         if (!controller.signal.aborted) {
           json(res, 502, { code: error.code || 'PLAYBACK_FAILED', message: error.message });
+        } else if (!res.headersSent && !res.destroyed) {
+          json(res, 499, { code: 'ERR_CANCELED', message: '已取消' });
         }
       } finally {
         res.off('close', abort);
@@ -159,6 +308,18 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
           throw Object.assign(new Error('剧集编号无效'), { code: 'INVALID_REQUEST' });
         }
         json(res, 200, await details(input.seriesId, controller.signal));
+      } else if (url.pathname === '/danmaku') {
+        if (typeof input.seriesId !== 'string' || !/^\d{1,30}$/.test(input.seriesId)
+          || typeof input.episodeId !== 'string' || !/^\d{1,30}$/.test(input.episodeId)) {
+          throw Object.assign(new Error('剧集或分集编号无效'), { code: 'INVALID_REQUEST' });
+        }
+        json(res, 200, await fetchDanmakuList({
+          seriesId: input.seriesId,
+          episodeId: input.episodeId,
+          startMs: input.startMs,
+          durationMs: input.durationMs,
+          signal: controller.signal,
+        }));
       } else if (url.pathname === '/search') {
         json(res, 200, await searchDramas({ keyword: input.keyword, page: input.page, cursor: input.cursor, signal: controller.signal }));
       } else if (url.pathname === '/discover/category') {
@@ -213,7 +374,7 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
         json(res, 200, await clearDownloads(scope));
       } else if (url.pathname === '/downloads/play') {
         const { task, data } = await readDownloadedMedia(input.id);
-        const mediaUrl = registerMediaBuffer(data, host);
+        const { mediaUrl } = registerMediaBuffer(data, host);
         json(res, 200, {
           seriesId: task.seriesId,
           title: task.title,
@@ -238,9 +399,12 @@ function createService({ token = crypto.randomBytes(32).toString('hex'), prepare
   });
 
   server.on('close', () => {
+    closed = true;
     active?.abort();
+    cancelPrefetch();
     keepAwake.stopKeepAwake();
     files.clear();
+    episodeCache.clear();
   });
   return { server, token };
 }

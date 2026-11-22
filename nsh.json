@@ -3,7 +3,7 @@
   "icon": "assets/app-icon.png",
   "id": "com.hgdrama.nsh",
   "version": "0.1.0",
-  "build": 8,
+  "build": 10,
   "appearance": "dark",
   "window": {
     "titleBar": { "style": "hidden" }

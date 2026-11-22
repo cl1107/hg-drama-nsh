@@ -22,6 +22,7 @@ const PROCESS_STARTED = Date.now();
 let playbackQueue = Promise.resolve();
 let playbackReadyAt = 0;
 let playbackRejection = null;
+let preferredPlayMode = 'tab';
 const PLAYER_HOSTS = [
     'api5-normal-sinfonlineb.fqnovel.com',
     'api5-normal-sinfonlinea.fqnovel.com',
@@ -252,8 +253,10 @@ function signedSearchRequest({ keyword, page = 1, cursor = null, identity } = {}
 // Catalogue cursors belong to one anonymous identity; keep it in memory for this process only.
 const metadataDevice = { ...DEVICE, version_code: '73532', version_name: '7.3.5.32', manifest_version_code: '73532',
     update_version_code: '73532', pv_player: '73532', iid: localId(), device_id: localId() };
+const DANMAKU_API_RE = /^\/novel\/commentapi\/comment\/list\/\d{1,30}\/v1\/$/;
 function signedMetadataRequest(apiPath, values = {}, payload = null) {
-    if (!['/reading/distribution/category/landpage/v/', '/reading/bookapi/bookmall/cell/change/v'].includes(apiPath)) {
+    if (!['/reading/distribution/category/landpage/v/', '/reading/bookapi/bookmall/cell/change/v'].includes(apiPath)
+        && !DANMAKU_API_RE.test(apiPath)) {
         throw new Error('不支持的 App 目录接口');
     }
     const body = payload === null ? null : Buffer.from(JSON.stringify(payload));
@@ -440,7 +443,7 @@ async function fetchAppPlayUrl(vid, options = {}) {
                   && ['BUSINESS_REJECTED', 'HTTP_403', 'HTTP_429'].includes(error.registrationFailure))) playbackRejection = error;
             throw error;
         }
-        finally { playbackReadyAt = Date.now() + 1000; }
+        finally { playbackReadyAt = Date.now() + 150; }
     });
     playbackQueue = pending.catch(() => {});
     if (!options.signal) return pending;
@@ -452,6 +455,65 @@ async function fetchAppPlayUrl(vid, options = {}) {
             if (options.signal.aborted) cancel();
         })]);
     } finally { options.signal.removeEventListener('abort', cancel); }
+}
+
+async function raceRoutes(routes, callApi, signal) {
+    throwIfAborted(signal);
+    const controllers = routes.map(() => new AbortController());
+    const abortAll = () => {
+        for (const c of controllers) {
+            if (!c.signal.aborted) c.abort();
+        }
+    };
+    const onParentAbort = () => abortAll();
+    signal?.addEventListener('abort', onParentAbort, { once: true });
+    let lastError = null;
+    let nonEmptyError = null;
+    try {
+        const attempts = routes.map(([mode, host, closeConn], idx) => (async () => {
+            const sub = controllers[idx];
+            const res = await callApi(mode, host, closeConn, sub.signal);
+            return { mode, res };
+        })());
+        return await new Promise((resolve, reject) => {
+            let remaining = attempts.length;
+            let settled = false;
+            if (remaining === 0) {
+                resolve(null);
+                return;
+            }
+            for (const p of attempts) {
+                p.then(result => {
+                    if (settled) return;
+                    settled = true;
+                    abortAll();
+                    preferredPlayMode = result.mode;
+                    resolve(result.res);
+                }, error => {
+                    if (settled) return;
+                    if (signal?.aborted) {
+                        settled = true;
+                        abortAll();
+                        reject(abortError(signal));
+                        return;
+                    }
+                    if (error?.code !== 'ERR_CANCELED') {
+                        lastError = error;
+                        if (error?.code !== 'EMPTY_RESPONSE' && !nonEmptyError) nonEmptyError = error;
+                    }
+                    remaining -= 1;
+                    if (remaining === 0) {
+                        settled = true;
+                        if (nonEmptyError) reject(nonEmptyError);
+                        else resolve(null);
+                    }
+                });
+            }
+        });
+    } finally {
+        signal?.removeEventListener('abort', onParentAbort);
+        abortAll();
+    }
 }
 
 async function fetchAppPlayUrlFresh(vid, options) {
@@ -469,27 +531,31 @@ async function fetchAppPlayUrlFresh(vid, options) {
     try {
         let response;
         let lastError;
-        const callApi = async (mode, host, closeConnection = false) => {
+        const callApi = async (mode, host, closeConnection = false, subSignal = signal) => {
             const signed = mode === 'tab'
                 ? videoTabRequest(identity, vid, host)
                 : playbackRequest(payload, identity, mode === 'v5' ? vid : '', host);
             if (closeConnection) signed.headers.Connection = 'close';
-            return requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
+            return requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, subSignal);
         };
-        const attempts = [
-            ['v5', PLAYER_HOSTS[0], false],
-            ['v5', PLAYER_HOSTS[1], true],
-            ['tab', PLAYER_HOSTS[0], true],
-            ['tab', PLAYER_HOSTS[1], true],
-        ];
-        for (let i = 0; i < attempts.length; i += 1) {
+        const secondaryMode = preferredPlayMode === 'tab' ? 'v5' : 'tab';
+        try {
+            response = await raceRoutes([
+                [preferredPlayMode, PLAYER_HOSTS[0], false],
+                [secondaryMode, PLAYER_HOSTS[0], true],
+            ], callApi, signal);
+        } catch (error) {
             throwIfAborted(signal);
-            if (i > 0 && deadline - Date.now() < 1000) break;
+            lastError = error;
+            if (error.code === 'ERR_CANCELED' || error.code !== 'EMPTY_RESPONSE') throw error;
+        }
+        if (!response && deadline - Date.now() >= 1500) {
+            throwIfAborted(signal);
             try {
-                const [mode, host, closeConn] = attempts[i];
-                response = await callApi(mode, host, closeConn);
-                throwIfAborted(signal);
-                break;
+                response = await raceRoutes([
+                    [preferredPlayMode, PLAYER_HOSTS[1], true],
+                    [secondaryMode, PLAYER_HOSTS[1], true],
+                ], callApi, signal);
             } catch (error) {
                 throwIfAborted(signal);
                 lastError = error;
@@ -497,7 +563,7 @@ async function fetchAppPlayUrlFresh(vid, options) {
             }
         }
         if (!response) {
-            if (deadline - Date.now() >= 8000) {
+            if (deadline - Date.now() >= 6000) {
                 try { identity = await registerPlaybackDevice(requestJson, { signal }); }
                 catch (registrationError) {
                     throwIfAborted(signal);
@@ -507,12 +573,22 @@ async function fetchAppPlayUrlFresh(vid, options) {
                 }
             }
             throwIfAborted(signal);
-            for (const mode of ['tab', 'v5', 'v1']) {
-                if (deadline - Date.now() < 1500) break;
+            if (deadline - Date.now() >= 1500) {
                 try {
-                    response = await callApi(mode, PLAYER_HOSTS[0], true);
+                    response = await raceRoutes([
+                        ['tab', PLAYER_HOSTS[0], true],
+                        ['v5', PLAYER_HOSTS[0], true],
+                    ], callApi, signal);
+                } catch (error) {
                     throwIfAborted(signal);
-                    break;
+                    lastError = error;
+                    if (error.code === 'ERR_CANCELED' || error.code !== 'EMPTY_RESPONSE') throw error;
+                }
+            }
+            if (!response && deadline - Date.now() >= 1500) {
+                try {
+                    response = await callApi('v1', PLAYER_HOSTS[0], true, signal);
+                    throwIfAborted(signal);
                 } catch (error) {
                     throwIfAborted(signal);
                     lastError = error;

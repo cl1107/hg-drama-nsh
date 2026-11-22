@@ -2,6 +2,8 @@ import { Image, token } from "nsh";
 import { Button as BaseButton } from "nsh/base";
 import play from "../assets/icons/play.svg";
 import pause from "../assets/icons/pause.svg";
+import skip_prev from "../assets/icons/skip-prev.svg";
+import skip_next from "../assets/icons/skip-next.svg";
 import compass from "../assets/icons/compass.svg";
 import search from "../assets/icons/search.svg";
 import cup from "../assets/icons/cup.svg";
@@ -27,7 +29,7 @@ import info from "../assets/icons/info.svg";
 import refresh from "../assets/icons/refresh.svg";
 import sun from "../assets/icons/sun.svg";
 import moon from "../assets/icons/moon.svg";
-const icons = {"play": play, "pause": pause, "compass": compass, "search": search, "cup": cup, "spark": spark, "history": history, "bell": bell, "download": download, "settings": settings, "user": user, "chevron-left": chevron_left, "chevron-right": chevron_right, "chevron-up": chevron_up, "chevron-down": chevron_down, "heart": heart, "star": star, "volume": volume, "mute": mute, "expand": expand, "share": share, "close": close, "list": list, "info": info, "refresh": refresh, "sun": sun, "moon": moon};
+const icons = {"play": play, "pause": pause, "skip-prev": skip_prev, "skip-next": skip_next, "compass": compass, "search": search, "cup": cup, "spark": spark, "history": history, "bell": bell, "download": download, "settings": settings, "user": user, "chevron-left": chevron_left, "chevron-right": chevron_right, "chevron-up": chevron_up, "chevron-down": chevron_down, "heart": heart, "star": star, "volume": volume, "mute": mute, "expand": expand, "share": share, "close": close, "list": list, "info": info, "refresh": refresh, "sun": sun, "moon": moon};
 export type IconName = keyof typeof icons;
 export function Icon(props: { name: IconName; size?: number; color?: "foreground" | "muted-foreground" | "primary" | "primary-foreground" | "media-foreground" }) {
  return <Image src={icons[props.name]} style={{ width: props.size ?? 20, height: props.size ?? 20, tintColor: token(props.color ?? "muted-foreground") }} />;

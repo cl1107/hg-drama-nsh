@@ -1,6 +1,12 @@
 import { setColorScheme, signal, Storage } from "nsh";
 
 export type QualityOption = "auto" | "1080p" | "720p" | "540p" | "480p" | "360p";
+export type DanmakuArea = "top" | "half" | "full";
+export type DanmakuFontWeight = 300 | 400 | 600 | 700;
+export type DanmakuSpeed = "slow" | "normal" | "fast";
+
+const ALLOWED_DANMAKU_COLORS = new Set(["", "#ffffff", "#ffe14d", "#5ce1ff", "#7dff8a", "#ff9ec7", "#ff9f43", "rainbow"]);
+const ALLOWED_DANMAKU_WEIGHTS = new Set<DanmakuFontWeight>([300, 400, 600, 700]);
 
 export interface HistoryItem {
   seriesId: string;
@@ -28,6 +34,18 @@ export interface AppPreferences {
   autoPlayNext: boolean;
   colorScheme: "dark" | "light";
   sidebarCollapsed: boolean;
+  danmakuEnabled: boolean;
+  danmakuOpacity: number;
+  danmakuFontSize: number;
+  danmakuScaleWithVideo: boolean;
+  danmakuFontWeight: DanmakuFontWeight;
+  danmakuColor: string;
+  danmakuLanes: number;
+  danmakuArea: DanmakuArea;
+  danmakuSpeed: DanmakuSpeed;
+  danmakuShowInFullscreen: boolean;
+  danmakuMergeDup: boolean;
+  danmakuBlockWords: string[];
 }
 
 const PREFS_KEY = "hg:prefs:v1";
@@ -37,6 +55,18 @@ const DEFAULT_PREFS: AppPreferences = {
   autoPlayNext: true,
   colorScheme: "dark",
   sidebarCollapsed: false,
+  danmakuEnabled: true,
+  danmakuOpacity: 0.85,
+  danmakuFontSize: 20,
+  danmakuScaleWithVideo: true,
+  danmakuFontWeight: 600,
+  danmakuColor: "",
+  danmakuLanes: 8,
+  danmakuArea: "half",
+  danmakuSpeed: "normal",
+  danmakuShowInFullscreen: true,
+  danmakuMergeDup: true,
+  danmakuBlockWords: [],
 };
 
 const activeAccountKey = signal("guest");
@@ -86,6 +116,38 @@ export async function loadUserData(accountKey = "guest"): Promise<void> {
     autoPlayNext: typeof p?.autoPlayNext === "boolean" ? p.autoPlayNext : true,
     colorScheme: p?.colorScheme === "light" ? "light" : "dark",
     sidebarCollapsed: Boolean(p?.sidebarCollapsed),
+    danmakuEnabled: typeof p?.danmakuEnabled === "boolean" ? p.danmakuEnabled : DEFAULT_PREFS.danmakuEnabled,
+    danmakuOpacity:
+      typeof p?.danmakuOpacity === "number" && Number.isFinite(p.danmakuOpacity) && p.danmakuOpacity >= 0.2 && p.danmakuOpacity <= 1
+        ? p.danmakuOpacity
+        : DEFAULT_PREFS.danmakuOpacity,
+    danmakuFontSize:
+      typeof p?.danmakuFontSize === "number" && Number.isFinite(p.danmakuFontSize) && p.danmakuFontSize >= 12 && p.danmakuFontSize <= 36
+        ? Math.round(p.danmakuFontSize)
+        : DEFAULT_PREFS.danmakuFontSize,
+    danmakuScaleWithVideo:
+      typeof p?.danmakuScaleWithVideo === "boolean" ? p.danmakuScaleWithVideo : DEFAULT_PREFS.danmakuScaleWithVideo,
+    danmakuFontWeight:
+      typeof p?.danmakuFontWeight === "number" && ALLOWED_DANMAKU_WEIGHTS.has(p.danmakuFontWeight as DanmakuFontWeight)
+        ? (p.danmakuFontWeight as DanmakuFontWeight)
+        : DEFAULT_PREFS.danmakuFontWeight,
+    danmakuColor:
+      typeof p?.danmakuColor === "string" && ALLOWED_DANMAKU_COLORS.has(p.danmakuColor)
+        ? p.danmakuColor
+        : DEFAULT_PREFS.danmakuColor,
+    danmakuLanes:
+      typeof p?.danmakuLanes === "number" && Number.isFinite(p.danmakuLanes) && p.danmakuLanes >= 2 && p.danmakuLanes <= 16
+        ? Math.round(p.danmakuLanes)
+        : DEFAULT_PREFS.danmakuLanes,
+    danmakuArea: p?.danmakuArea === "top" || p?.danmakuArea === "half" || p?.danmakuArea === "full" ? p.danmakuArea : DEFAULT_PREFS.danmakuArea,
+    danmakuSpeed: p?.danmakuSpeed === "slow" || p?.danmakuSpeed === "normal" || p?.danmakuSpeed === "fast" ? p.danmakuSpeed : DEFAULT_PREFS.danmakuSpeed,
+    danmakuShowInFullscreen:
+      typeof p?.danmakuShowInFullscreen === "boolean" ? p.danmakuShowInFullscreen : DEFAULT_PREFS.danmakuShowInFullscreen,
+    danmakuMergeDup:
+      typeof p?.danmakuMergeDup === "boolean" ? p.danmakuMergeDup : DEFAULT_PREFS.danmakuMergeDup,
+    danmakuBlockWords: Array.isArray(p?.danmakuBlockWords)
+      ? Array.from(new Set(p.danmakuBlockWords.filter((w): w is string => typeof w === "string").map(w => w.trim()).filter(Boolean)))
+      : DEFAULT_PREFS.danmakuBlockWords,
   };
   prefsState.set(nextPrefs);
   setColorScheme(nextPrefs.colorScheme);

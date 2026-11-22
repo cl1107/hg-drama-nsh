@@ -8,6 +8,7 @@ const routes = {
  [`GET ${serviceConfig.baseUrl}/auth/status`]: {status:200,body:JSON.stringify({loggedIn:false})},
  [`POST ${serviceConfig.baseUrl}/discover/rank`]: {status:200,body:JSON.stringify({items:[candidate],hasMore:false,nextOffset:0,sessionId:"test"})},
  [`POST ${serviceConfig.baseUrl}/discover/category`]: {status:200,body:JSON.stringify(categories)},
+ [`POST ${serviceConfig.baseUrl}/danmaku`]: {status:200,body:JSON.stringify({items:[],nextMs:30000,total:0})},
  [`POST ${serviceConfig.baseUrl}/play`]: {status:502,body:JSON.stringify({code:"EMPTY_RESPONSE"})},
 };
 test("keeps retry and next actions available when the recommended episode has no source", async () => {
@@ -90,6 +91,8 @@ test("history playback toggles fullscreen in place without blanking the player",
   await app.waitFor("短剧播放");
   await app.waitFor("id:global-video");
   await app.hover("id:global-player");
+  await app.waitFor("id:player-header-episode");
+  await app.waitFor("id:player-title-episode");
   await app.press("label:视频全屏");
   await app.waitFor("id:global-video");
   expect(app.window("main").state()?.mode).toBe("fullScreen");
@@ -182,4 +185,197 @@ test("fullscreen player auto-hides overlay UI when idle and restores it on mouse
   await app.press("关闭播放面板");
   await app.wait(3200);
   await app.waitFor("label:暂停播放", {state:"gone"});
+});
+
+test("clicking the video surface toggles pause and resume with visual indicator", async () => {
+  const playback = {seriesId:candidate.id,title:candidate.title,episode:{episodeId:"123",index:1},episodes:[{episodeId:"123",index:1},{episodeId:"124",index:2}],codec:"hevc",quality:"1080p",encrypted:true,mediaUrl:serviceConfig.baseUrl+"/media/"+"a".repeat(64)};
+  const app = await open("./App.tsx",{platform:"macos",width:1480,height:820,network:{...routes,[`POST ${serviceConfig.baseUrl}/play`]:{status:200,body:JSON.stringify(playback)}}});
+  await app.waitFor("id:global-video");
+  await app.waitFor("id:video-surface-tap");
+  await app.hover("id:recommendation-page");
+  await app.waitFor("label:暂停播放");
+  // 点击视频画面暂停播放
+  await app.press("id:video-surface-tap");
+  await app.waitFor("id:video-paused-indicator");
+  await app.waitFor("label:继续播放");
+  // 再次点击视频画面恢复播放
+  await app.press("id:video-surface-tap");
+  await app.waitFor("id:video-paused-indicator", {state:"gone"});
+  await app.waitFor("label:暂停播放");
+});
+
+test("episodes sheet auto-centers current episode, toggles order, and jumps to start or end", async () => {
+  const episodes = Array.from({length: 120}, (_, i) => ({episodeId: String(1000 + i), index: i + 1}));
+  const playback = {
+    seriesId: candidate.id,
+    title: candidate.title,
+    episode: episodes[74],
+    episodes,
+    codec: "hevc",
+    quality: "1080p",
+    encrypted: true,
+    mediaUrl: serviceConfig.baseUrl + "/media/" + "a".repeat(64),
+  };
+  const app = await open("./App.tsx", {
+    platform: "macos",
+    width: 1480,
+    height: 820,
+    network: { ...routes, [`POST ${serviceConfig.baseUrl}/play`]: { status: 200, body: JSON.stringify(playback) } },
+  });
+  await app.waitFor("id:global-video");
+  await app.hover("id:recommendation-page");
+  await app.waitFor("id:player-title-episode");
+  await app.press("选集 · 全120集");
+  await app.waitFor("id:episodes-list");
+  await app.waitFor("id:episode-item-75");
+  await app.waitFor("id:episodes-locate-current");
+  // 正序时第 1 集排在第 120 集之前
+  const ascTexts = app.texts();
+  expect(ascTexts.indexOf("1")).toBeGreaterThan(-1);
+  expect(ascTexts.indexOf("120")).toBeGreaterThan(ascTexts.indexOf("1"));
+  // 到头、到底与定位当前集均可正常触发
+  await app.press("id:episodes-scroll-top");
+  await app.press("id:episodes-scroll-bottom");
+  await app.press("id:episodes-locate-current");
+  // 切换倒序后，第 120 集排在第 1 集之前
+  await app.press("id:episodes-order-desc");
+  await app.waitUntil(() => {
+    const texts = app.texts();
+    const first = texts.indexOf("1");
+    const last = texts.indexOf("120");
+    return first > -1 && last > -1 && last < first;
+  });
+  await app.press("id:episodes-scroll-top");
+  await app.press("id:episodes-scroll-bottom");
+  // 切回正序后，恢复第 1 集在第 120 集之前
+  await app.press("id:episodes-order-asc");
+  await app.waitUntil(() => {
+    const texts = app.texts();
+    const first = texts.indexOf("1");
+    const last = texts.indexOf("120");
+    return first > -1 && last > -1 && first < last;
+  });
+});
+
+test("player switches to previous and next episodes with boundary disabled states", async () => {
+  const episodes = [
+    { episodeId: "121", index: 1 },
+    { episodeId: "122", index: 2 },
+    { episodeId: "123", index: 3 },
+  ];
+  const app = await open("./App.tsx", {
+    platform: "macos",
+    width: 1480,
+    height: 820,
+    network: {
+      ...routes,
+      [`POST ${serviceConfig.baseUrl}/play`]: request => {
+        const body = request.body ? (JSON.parse(request.body) as { episodeId?: string }) : {};
+        const ep = episodes.find(item => item.episodeId === body.episodeId) ?? episodes[1];
+        return {
+          status: 200,
+          body: JSON.stringify({
+            seriesId: candidate.id,
+            title: candidate.title,
+            episode: ep,
+            episodes,
+            codec: "hevc",
+            quality: "1080p",
+            encrypted: true,
+            mediaUrl: serviceConfig.baseUrl + "/media/" + "a".repeat(64),
+          }),
+        };
+      },
+    },
+  });
+  await app.waitFor("id:global-video");
+  await app.hover("id:recommendation-page");
+  await app.waitFor("第2集");
+  expect(app.enabled("id:player-prev-episode")).toBe(true);
+  expect(app.enabled("id:player-next-episode")).toBe(true);
+
+  await app.press("id:player-next-episode");
+  await app.waitFor("第3集");
+  expect(app.enabled("id:player-prev-episode")).toBe(true);
+  expect(app.enabled("id:player-next-episode")).toBe(false);
+
+  await app.press("id:player-prev-episode");
+  await app.waitFor("第2集");
+  await app.press("id:player-prev-episode");
+  await app.waitFor("第1集");
+  expect(app.enabled("id:player-prev-episode")).toBe(false);
+  expect(app.enabled("id:player-next-episode")).toBe(true);
+});
+
+test("player fetches and renders danmaku, toggles visibility, and updates danmaku settings", async () => {
+  const playback = {
+    seriesId: candidate.id,
+    title: candidate.title,
+    episode: { episodeId: "123", index: 1 },
+    episodes: [{ episodeId: "123", index: 1 }, { episodeId: "124", index: 2 }],
+    codec: "hevc",
+    quality: "1080p",
+    encrypted: true,
+    mediaUrl: serviceConfig.baseUrl + "/media/" + "a".repeat(64),
+  };
+  const app = await open("./App.tsx", {
+    platform: "macos",
+    width: 1480,
+    height: 820,
+    network: {
+      ...routes,
+      [`POST ${serviceConfig.baseUrl}/play`]: { status: 200, body: JSON.stringify(playback) },
+      [`POST ${serviceConfig.baseUrl}/danmaku`]: {
+        status: 200,
+        body: JSON.stringify({
+          items: [
+            { id: "dm1", text: "前排打卡", timeMs: 0, likeCount: 2 },
+            { id: "dm2", text: "前排打卡！", timeMs: 0, likeCount: 1 },
+          ],
+          nextMs: 30000,
+          total: 2,
+        }),
+      },
+    },
+  });
+  await app.waitFor("id:global-video");
+  await app.waitFor("id:danmaku-layer");
+  await app.waitFor("id:danmaku-bullet-dm1");
+  expect(app.texts()).toContain("前排打卡");
+  // 合并重复弹幕开启时，dm2 并入 dm1 并显示 ×2
+  expect(app.texts()).toContain("×2");
+  expect(app.shows("id:danmaku-bullet-dm2")).toBe(false);
+
+  await app.hover("id:recommendation-page");
+  await app.waitFor("弹幕 开");
+  await app.press("id:player-danmaku-toggle");
+  await app.waitFor("弹幕 关");
+  await app.waitFor("id:danmaku-bullet-dm1", { state: "gone" });
+
+  await app.press("id:player-danmaku-toggle");
+  await app.waitFor("弹幕 开");
+  await app.waitFor("id:danmaku-bullet-dm1");
+
+  await app.press("id:player-danmaku-settings-btn");
+  await app.waitFor("不透明度");
+  await app.waitFor("字号随画面大小缩放");
+  await app.press("id:settings-danmaku-weight-700");
+  await app.press("id:settings-danmaku-color-ffe14d");
+  await app.press("id:settings-danmaku-lanes-inc");
+  await app.waitFor("9 行");
+  await app.press("id:settings-danmaku-speed-fast");
+  await app.press("id:settings-danmaku-scale");
+  await app.press("id:settings-danmaku-fullscreen");
+  await app.press("id:settings-danmaku-mergedup");
+  await app.press("id:settings-danmaku-mergedup");
+
+  // 屏蔽词管理：添加屏蔽词后实时过滤屏幕上的弹幕
+  await app.press("id:settings-danmaku-block-manage");
+  await app.waitFor("屏蔽词管理");
+  await app.type("id:danmaku-block-input", "前排");
+  await app.press("id:danmaku-block-add");
+  await app.waitFor("id:danmaku-block-word-前排");
+  await app.waitFor("id:danmaku-bullet-dm1", { state: "gone" });
+  await app.press("id:settings-danmaku-block-back");
+  await app.waitFor("已设 1 个");
 });

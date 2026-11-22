@@ -1,5 +1,63 @@
 # 开发交接
 
+## 2026-11-22 弹幕匀速防重叠修复 & 完整弹幕设置面板（构建号 10）
+
+1. **弹幕匀速滚动与防重叠修复**（[DanmakuLayer.tsx](../src/features/player/DanmakuLayer.tsx)）：
+   - **根因定位**：此前 `effect` 内调用 `syncBullets()` 追踪了 `positionSec`，导致每次 `onProgress` 触发都对所有活跃弹幕重新调用 `resumeAllBullets()` -> `x.timing(endX, { duration: 8500 })`，越靠近左边缘剩余距离越小而时长仍为 `8500ms`，造成指数级减速并在左侧堆叠成团；同时原逻辑中轨道长度纳入了速度计算使长弹幕追尾短弹幕，且缺少单行限制与严格轨道间距约束。
+   - **修复方案**：改用普通数组管理活跃弹幕、`prevPaused` 仅在真实暂停/恢复状态跳变时触发 `pauseAllBullets()`/`resumeAllBullets()`，所有位移统一使用 `Easing.linear` 严格匀速直线运动；所有弹幕统一水平像素速度（消除长短弹幕追尾），配合暂停感知播放时钟 `nowPlayMs()`、单行文本清洗与 `numberOfLines: 1` 估算/实测宽度、`44px` 同轨安全间距及 `onLayout` 宽度校正，满轨时自动跳过不强行叠压。
+2. **补齐完整弹幕设置抽屉 & 屏蔽词管理**（[user-data.ts](../src/stores/user-data.ts)、[GlobalPlayer.tsx](../src/features/player/GlobalPlayer.tsx)）：
+   - 底部控制栏在「弹幕 开/关」右侧新增独立「弹幕设置」入口按钮（`testID="player-danmaku-settings-btn"`），打开专属「弹幕设置」抽屉（「播放设置」抽屉也保留直达入口）。
+   - 完整实现并持久化：弹幕开关、不透明度滑杆（`20%–100%`）、字号滑杆（`12–36px`）、字号随画面大小缩放（实时展示当前生效字号）、粗细（细 / 常规 / 粗 / 特粗）、颜色（原 / 白 / 黄 / 青 / 绿 / 粉 / 橙 / 彩）、显示行数（`2–16 行` 步进与快捷档）、滚动速度（慢 / 正常 / 快）、全屏时显示弹幕、合并重复弹幕（15 秒同轨合并并展示 `×N` 计数）以及独立「屏蔽词管理」子视图（增删清空并在屏幕上即时过滤）。
+3. **验证与打包**：
+   - `./tools/nsh check`、`./tools/nsh build`、`App.test.tsx` **13/13**（含重复弹幕合并 `×2`、全量弹幕设置交互与屏蔽词实时过滤回归测试）、`session.test.tsx` **1/1** 与 Node 服务端/协议测试 **53/53** 全部通过。
+   - 构建号 10（[nsh.json](../nsh.json)）已通过 `./tools/package-macos` 打包并替换 `/Applications/红果短剧-NSH.app`，`codesign --verify --deep --strict` 校验通过。
+
+## 2026-11-22 切集速度优化（并发探测 / 分片并发下载 / 详情与媒体缓存 / 下一集预取）& 构建号 9 打包
+
+1. **瓶颈定位**：实测原有每集准备耗时达 35–51 秒，核心瓶颈在红果 VOD CDN 单连接下载限速（~300–400 KB/s，21.38 MB 耗时 51.2 秒），叠加每集重抓官网详情（~934 ms）、串行探测已空响应的 `v5` 与 1 秒节流、以及缺少已解密缓存与下一集预取。
+2. **优化实施**：
+   - **取源并发探测**（[service/vendor/hongguo/app-source.js](../service/vendor/hongguo/app-source.js)）：`playbackReadyAt` 全局节流降至 `150ms`；新增 `raceRoutes()` 并发竞速主/备模式（记住 `preferredPlayMode`，默认优先 `tab`），首个有效响应立即胜出并中止其余请求，全空后再轮询备用节点与重注册兜底。
+   - **详情缓存 & CDN 竞速 + 1MB×6 路分片并发下载**（[service/playback.cjs](../service/playback.cjs)）：`details()` 新增 10 分钟/32 部剧 LRU 缓存与并发去重；`downloadFromVariants()` 先对同编码层多 CDN 节点并发发起首 MB `Range` 探测，胜出节点直接以 6 路并发拉取剩余 1MB 分片并在内存精确拼接（失败自动回退单连接全量下载），再交 CENC 解密。
+   - **已解密媒体 LRU 缓存、静默预取下一集与抢占**（[service/server.cjs](../service/server.cjs)）：`files` + `episodeCache` 支持最多 4 集缓存复用；当前集返回后延迟 `150ms` 后台静默预取下一集（切集恰逢预取进行中直接复用）；新 `/play` 请求到来主动中止旧请求抢占执行（中止时若连接未关回写 `499`），消除 `409 BUSY`。
+3. **验证与实测对比**：
+   - 真实在线实测（《宴律，你的白月光回国了》）：冷启动第 1 集（21.38 MB）由 ~52.6 秒降至 **5,106 ms**；第 2 集（10.10 MB）直拉由 ~35.9 秒降至 **770 ms**；经 `/play` 命中预取缓存切第 2 集耗时 **7 ms**。
+   - Node 服务端与协议测试 **53/53** 通过（含 `downloadFromVariants` 竞速/分片拼接、`server.cjs` 缓存/预取/抢占单测）；`./tools/nsh check`、`./tools/nsh build`、`App.test.tsx` **13/13**、`session.test.tsx` **1/1** 全部通过。
+   - 构建号 9（[nsh.json](../nsh.json)）已通过 `./tools/package-macos` 重新打包并替换安装至 `/Applications/红果短剧-NSH.app`，`codesign --verify --deep --strict` 校验通过，已确认内置 `service/danmaku.cjs`。
+
+## 2026-11-22 播放器弹幕功能 & 上一集/下一集切换
+
+1. **后端真实在线弹幕接口**（[service/vendor/hongguo/app-source.js](../service/vendor/hongguo/app-source.js)、[service/danmaku.cjs](../service/danmaku.cjs)、[service/server.cjs](../service/server.cjs)、[tools/package-macos](../tools/package-macos)）：
+   - 对照 `/Users/cl/Downloads/短剧播放器.app` 核实红果弹幕接口 `POST /novel/commentapi/comment/list/{episodeId}/v1/`（`comment-source=601`、`server-channel=1000`、`group_type=30`、`comment_type=20`、`business_param.book_id/start_offset_time/playlet_item_duration/need_danmaku_guide_type=[48]`），在 `signedMetadataRequest()` 放行该路径正则。
+   - 新增 `service/danmaku.cjs` 导出 `fetchDanmaku` 与 `parseDanmakuResponse`，完成入参校验、响应 `data_list` 解析去重与按 `offset_time` 排序，并依据 `extra.next_query_danmaku_list_time` / `common_list_info.cursor.end_offset_time` 计算分段下一页游标 `nextMs` 及总弹幕数 `total`。
+   - `service/server.cjs` 注册 `POST /danmaku` 路由（受 Bearer 鉴权与 ID 校验保护），`tools/package-macos` 同步加入 `danmaku.cjs`。
+2. **弹幕渲染层与偏好持久化**（[DanmakuLayer.tsx](../src/features/player/DanmakuLayer.tsx)、[user-data.ts](../src/stores/user-data.ts)、[SettingsView.tsx](../src/features/settings/SettingsView.tsx)）：
+   - 新增 `DanmakuLayer`，按播放进度分段拉取与提前 10 秒预取下一窗口，使用 NSH 原生 `AnimatedValue.timing()` 线性驱动弹幕滚动；支持多轨道防重叠分配、同屏上限控制、暂停定格/恢复续播、seek/切集清屏重同步以及失败 8 秒冷却静默降级；容器 `pointerEvents: "none"` 不拦截视频点击手势。
+   - `user-data.ts` 新增并持久化 `danmakuEnabled`、`danmakuOpacity`、`danmakuFontSize`、`danmakuArea`（顶部/半屏/全屏）、`danmakuSpeed`（慢/正常/快）；`SettingsView.tsx` 增加「默认开启弹幕」设置项。
+3. **播放器上一集/下一集切换 & 弹幕控制**（[GlobalPlayer.tsx](../src/features/player/GlobalPlayer.tsx)、[icons.tsx](../src/ui/icons.tsx)、`src/assets/icons/skip-prev.svg`、`skip-next.svg`）：
+   - 底部控制栏左侧新增「上一集」「下一集」图标按钮（首/尾集自动禁用，快捷键 `P` / `N`），`onEnd` 自动连播同步复用 `nextEpisode()`。
+   - 底部控制栏右侧新增「弹幕 开/关」快捷切换按钮（快捷键 `D`），「播放设置」抽屉补充完整弹幕开关、透明度、字号、显示区域与滚动速度调节（支持滚动）。
+4. **验证**：
+   - 在线实测 `fetchDanmaku({ seriesId: '7503745441910017049', episodeId: '7503780574541122622', startMs: 0, durationMs: 120000 })` 返回 23 条真实弹幕（总计 908 条，`nextMs: 30000`）。
+   - Node 服务与协议套件 `51/51` 通过（含 `parseDanmakuResponse` 与 `POST /danmaku` 路由单测）。
+   - `./tools/nsh check`、`./tools/nsh build`、`App.test.tsx` `13/13`（含上一集/下一集边界切换、弹幕拉取渲染/显隐开关/设置调节回归测试）、`session.test.tsx` `1/1` 全部通过。如需同步到 `/Applications/红果短剧-NSH.app`，运行 `./tools/package-macos` 重打包。
+
+## 2026-11-22 选集面板自动居中定位、正/倒序切换与到头/到底快捷滚动
+
+1. **选集面板体验增强**（[GlobalPlayer.tsx](../src/features/player/GlobalPlayer.tsx)）：
+   - **自动滚动到当前集居中**：打开选集面板时，待 `List` 视口完成布局（`onLayout` 高度 > 0），通过 `ListRef.scrollToIndex({ index, viewPosition: 0.5, animated: false })` 自动将当前播放集定位到视口中央；顶部标题旁新增可点击的 `第X集` 胶囊（`testID="episodes-locate-current"`），任意滚动后可一键平滑回到当前集居中。
+   - **正序 / 倒序切换**：新增 `episodeOrder` 状态及工具栏分段按钮 `正序` / `倒序`（`testID="episodes-order-asc"` / `episodes-order-desc"`），切换排序后自动重新居中到当前播放集。
+   - **到头 / 到底快捷切换**：工具栏右侧新增 `到头`（`scrollToIndex({ index: 0, viewPosition: 0, animated: true })`）与 `到底`（`scrollToEnd({ animated: true })`）按钮，在正序与倒序下均按当前列表首尾快速跳转。
+   - **播放页标题后显示当前集数**：短剧播放页与全屏顶部标题后补充 `第X集`（`testID="player-header-episode"`），左下角 `@剧名` 标题后补充 `第X集` 标签（`testID="player-title-episode"`），标题均支持截断收缩不挤压集数。
+2. **验证**：实测 NSH `List`（`numColumns={3}`）下 `scrollToIndex({ index: 74, viewPosition: 0.5 })`、`scrollToIndex({ index: 0, viewPosition: 0 })` 与 `scrollToEnd()` 的 `measureScrollPosition()` 偏移精确符合预期；新增 `episodes sheet auto-centers current episode, toggles order, and jumps to start or end` 回归测试（[App.test.tsx](../App.test.tsx)），`./tools/nsh check`、`./tools/nsh build`、`App.test.tsx` 11/11、`session.test.tsx` 1/1 全部通过。如需同步到 `/Applications/红果短剧-NSH.app`，运行 `./tools/package-macos` 重打包。
+
+## 2026-11-21 视频播放页点击画面暂停/继续播放
+
+1. **点击视频画面切换暂停/播放**（[GlobalPlayer.tsx](../src/features/player/GlobalPlayer.tsx)）：
+   - 在 `<Video>` 之上、所有交互覆盖层（顶部栏、右侧操作栏、左下简介、底部控制栏、选集/设置抽屉）之下新增铺满画面的透明点击层（`testID="video-surface-tap"`，`focusable={false}`），点击视频空白画面即触发 `revealFullscreenControls()` 与 `togglePlay()`；推荐页、短剧播放页及全屏态统一生效，点击按钮/控制栏/抽屉不误触。
+   - `togglePlay()` 补充 `!playbackError()` 保护，避免播放错误态误切换暂停。
+   - 暂停状态新增居中半透明播放图标指示（`testID="video-paused-indicator"`，`pointerEvents: "none"`），便于鼠标移出或全屏隐藏控制栏时明确辨识暂停态。
+2. **验证**：新增 `clicking the video surface toggles pause and resume with visual indicator` 回归测试（[App.test.tsx](../App.test.tsx)），`./tools/nsh check`、`./tools/nsh build`、`App.test.tsx` 10/10、`session.test.tsx` 1/1 全部通过。如需同步到 `/Applications/红果短剧-NSH.app`，运行 `./tools/package-macos` 重打包。
+
 ## 2026-11-21 接入 `video_tab` 兜底修复 `EMPTY_RESPONSE`
 
 1. **问题定位**：上游 `multi_video_model/player/v1` 与旧 `v1/` 在当前全量节点均返回 HTTP 200 空包（`content-length: 0`）。

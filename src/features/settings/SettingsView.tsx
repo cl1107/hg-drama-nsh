@@ -74,6 +74,15 @@ export function SettingsView(props: { onNotify?: (msg: string) => void }) {
             onPress={() => updatePreferences({ autoPlayNext: !preferences().autoPlayNext })}
           />
         </View>
+        <View class="flex-row items-center justify-between">
+          <Text class="text-sm text-muted-foreground">默认开启弹幕</Text>
+          <Button
+            label={preferences().danmakuEnabled ? "已开启" : "已关闭"}
+            variant={preferences().danmakuEnabled ? "primary" : "outline"}
+            size="sm"
+            onPress={() => updatePreferences({ danmakuEnabled: !preferences().danmakuEnabled })}
+          />
+        </View>
       </View>
 
       <View class="bg-card border border-border rounded-xl p-4 gap-3">

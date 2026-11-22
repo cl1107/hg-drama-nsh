@@ -50,7 +50,7 @@ app="$output/红果短剧-NSH.app"
 macos="$app/Contents/MacOS"
 backend="$app/Contents/Resources/backend"
 mkdir -p "$backend/service/vendor/hongguo" "$backend/src/media" "$backend/src/providers"
-for file in auth discover downloads keychain keep-awake playback range server transport; do
+for file in auth danmaku discover downloads keychain keep-awake playback range server transport; do
   cp "service/$file.cjs" "$backend/service/"
 done
 cp service/vendor/hongguo/*.js service/vendor/hongguo/LICENSE service/vendor/hongguo/NOTICE \
