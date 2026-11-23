@@ -1,5 +1,11 @@
 # 开发交接
 
+## 2026-11-23 GitHub 双平台发布
+
+- [Desktop packages](https://github.com/cl1107/hg-drama-nsh/actions/workflows/release.yml) 使用 NSH 0.6.1 和 Node.js 24.22.1 的官方发行档，校验 SHA-256 后在原生 runner 生成 macOS arm64、Windows x64 ZIP。推送与 `nsh.json` 版本一致的标签后，由 GitHub Actions 发布两份 ZIP 和校验文件。手动运行只生成构建产物。
+- Windows 免安装包补齐 `danmaku.cjs`，按 NSH 输出目录精确定位 UI 可执行文件。两个打包脚本均检查内置 Node.js 能加载随包发布的服务，并附带 NSH、Node.js 及项目许可证。
+- 每次构建结果和发布状态以 Actions 和 [GitHub Releases](https://github.com/cl1107/hg-drama-nsh/releases) 为准。Windows 桌面启动和播放仍按 [平台验收要求](VALIDATION.md) 在实机确认。
+
 ## 2026-11-22 弹幕匀速防重叠修复 & 完整弹幕设置面板（构建号 10）
 
 1. **弹幕匀速滚动与防重叠修复**（[DanmakuLayer.tsx](../src/features/player/DanmakuLayer.tsx)）：

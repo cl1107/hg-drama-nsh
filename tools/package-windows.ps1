@@ -41,6 +41,7 @@ if (-not (Test-Path $nshExe)) {
 if (-not (Test-Path $nshExe)) {
   throw "nsh.exe not found. Run: irm https://nsh.dev/install.ps1 | iex"
 }
+$nshLicense = Join-Path (Split-Path -Parent (Split-Path -Parent $nshExe)) 'LICENSE-APACHE'
 
 New-Item -ItemType Directory -Force -Path "$root\.tmp", "$root\.nsh\out" | Out-Null
 $stage = Join-Path $root ".tmp\win-package-$(Get-Random)"
@@ -65,6 +66,8 @@ try {
     };
     fs.writeFileSync(file, JSON.stringify(config, null, 2));
   " "$stage\nsh.json"
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to configure the NSH package' }
+  $appName = (Get-Content -Raw -Encoding UTF8 "$stage\nsh.json" | ConvertFrom-Json).name
 
   $output = Join-Path $outRoot "windows-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
   New-Item -ItemType Directory -Force -Path $output | Out-Null
@@ -72,23 +75,20 @@ try {
   Push-Location $stage
   try {
     & $nshExe package --target windows --out $output .
+    if ($LASTEXITCODE -ne 0) { throw 'NSH packaging failed' }
   } finally {
     Pop-Location
   }
 
-  $exeFile = Get-ChildItem -Path $output -Recurse -Filter '*.exe' | Select-Object -First 1
-  if (-not $exeFile) {
-    throw "No .exe produced by nsh package in $output"
-  }
-  $appDir = $exeFile.DirectoryName
-  $origExeName = $exeFile.Name
+  $appDir = Join-Path $output $appName
+  $launcherExe = Join-Path $appDir "$appName.exe"
   $uiExePath = Join-Path $appDir 'nsh-ui.exe'
-  Move-Item -Force $exeFile.FullName $uiExePath
+  Move-Item -LiteralPath $launcherExe -Destination $uiExePath
 
   # Bundle Node 24 + backend service
   $backend = Join-Path $appDir 'backend'
   New-Item -ItemType Directory -Force -Path "$backend\service\vendor\hongguo", "$backend\src\media", "$backend\src\providers" | Out-Null
-  foreach ($f in @('auth', 'discover', 'downloads', 'keychain', 'keep-awake', 'playback', 'range', 'server', 'transport')) {
+  foreach ($f in @('auth', 'danmaku', 'discover', 'downloads', 'keychain', 'keep-awake', 'playback', 'range', 'server', 'transport')) {
     Copy-Item "$root\service\$f.cjs" "$backend\service\"
   }
   Copy-Item "$root\service\vendor\hongguo\*.js", "$root\service\vendor\hongguo\LICENSE", "$root\service\vendor\hongguo\NOTICE", "$root\service\vendor\hongguo\THIRD-PARTY-NOTICES.md" "$backend\service\vendor\hongguo\"
@@ -96,10 +96,12 @@ try {
   Copy-Item "$root\src\providers\catalog.ts" "$backend\src\providers\"
   Copy-Item "$root\LICENSE" "$backend\LICENSE"
   Copy-Item $nodeLicense "$appDir\Node-LICENSE"
+  Copy-Item $nshLicense "$appDir\NSH-LICENSE-APACHE"
   Copy-Item $NodeExe "$appDir\node.exe"
+  & "$appDir\node.exe" -e 'require(process.argv[1])' "$backend\service\server.cjs"
+  if ($LASTEXITCODE -ne 0) { throw 'The packaged playback service could not be loaded' }
 
   # Compile native GUI launcher exe (no console window, double-click ready)
-  $launcherCs = Join-Path $stage 'Launcher.cs'
   $csSource = @'
 using System;
 using System.Diagnostics;
@@ -172,13 +174,12 @@ static class Program {
     }
 }
 '@
-  $launcherExe = Join-Path $appDir $origExeName
   Add-Type -TypeDefinition $csSource -Language CSharp -OutputAssembly $launcherExe -OutputType WindowsApplication -ReferencedAssemblies System.Windows.Forms
 
   $zipOut = Join-Path $output 'hg-drama-nsh-windows-x64.zip'
   if (Test-Path $zipOut) { Remove-Item -Force $zipOut }
-  Start-Sleep -Seconds 2
   & tar.exe -a -cf $zipOut -C $appDir .
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to create the portable ZIP' }
 
   Write-Host "==> Portable Windows package ready!"
   Write-Host "Dir: $appDir"

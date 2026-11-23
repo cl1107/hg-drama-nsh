@@ -68,6 +68,12 @@ node --test service/*.test.cjs service/vendor/hongguo/*.test.cjs
 xattr -cr /Applications/红果短剧-NSH.app
 ```
 
+### GitHub Release
+
+[Releases](https://github.com/cl1107/hg-drama-nsh/releases) 提供 macOS Apple Silicon 应用包和 Windows x64 免安装包，均内置 Node.js 和本机播放服务。macOS 包使用临时签名，Windows 启动器未签名。
+
+更新 `nsh.json` 的 `version` 和 `build` 并提交后，推送与版本一致的 `vX.Y.Z` 标签。GitHub Actions 会在两端构建成功后发布两个 ZIP 和 `SHA256SUMS.txt`。也可从 Actions 手动运行 `Desktop packages`，仅构建并保留产物供验证。
+
 ## ❓ 常见问题
 
 **为什么部分剧集或分集提示“上游暂未提供本集正片片源”？**  
