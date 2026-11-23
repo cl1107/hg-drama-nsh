@@ -178,9 +178,18 @@ static class Program {
 
   $zipOut = Join-Path $output 'hg-drama-nsh-windows-x64.zip'
   if (Test-Path $zipOut) { Remove-Item -Force $zipOut }
-  # Use .NET paths so the archive preserves the app's Chinese filename.
+  # Keep Chinese filenames and use standard forward slashes in ZIP entries.
+  [System.AppContext]::SetSwitch('Switch.System.IO.Compression.ZipFile.UseBackslash', $false)
   Add-Type -AssemblyName System.IO.Compression.FileSystem
   [System.IO.Compression.ZipFile]::CreateFromDirectory($appDir, $zipOut)
+  $archive = [System.IO.Compression.ZipFile]::OpenRead($zipOut)
+  try {
+    foreach ($entry in @("$appName.exe", 'nsh/bundle.nshc', 'backend/service/server.cjs')) {
+      if (-not $archive.GetEntry($entry)) { throw "Missing ZIP entry: $entry" }
+    }
+  } finally {
+    $archive.Dispose()
+  }
 
   Write-Host "==> Portable Windows package ready!"
   Write-Host "Dir: $appDir"
