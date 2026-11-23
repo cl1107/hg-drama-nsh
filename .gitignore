@@ -5,3 +5,5 @@
 node_modules/
 target/
 .DS_Store
+keys/
+*.secret

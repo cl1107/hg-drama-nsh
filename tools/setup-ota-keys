@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+APPLY=0
+KEY_DIR=".tmp/ota-keys"
+REPO="${HG_OTA_GITHUB_REPO:-cl1107/hg-drama-nsh}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --apply) APPLY=1; shift ;;
+    --dir) KEY_DIR="$2"; shift 2 ;;
+    --repo) REPO="$2"; shift 2 ;;
+    -h|--help)
+      cat <<EOF
+用法: ./tools/setup-ota-keys [--apply] [--dir <目录>] [--repo <owner/repo>]
+
+生成 NSH 免费本地自签名 OTA 密钥（root / release / update）并签发 365 天发布证书。
+默认输出到 .tmp/ota-keys（已被 .gitignore 忽略，切勿提交 *.secret）。
+传入 --apply 时自动将公钥写入 nsh.json 的 "updater" 配置中。
+EOF
+      exit 0
+      ;;
+    *) echo "未知参数: $1" >&2; exit 1 ;;
+  esac
+done
+
+mkdir -p "$KEY_DIR"
+chmod 700 "$KEY_DIR"
+
+if [[ -f "$KEY_DIR/root.secret" ]]; then
+  echo "检测到已有密钥目录 $KEY_DIR，跳过生成以防覆盖现有 root.secret。"
+else
+  ./tools/nsh keygen "$KEY_DIR/root"
+  ./tools/nsh keygen "$KEY_DIR/release"
+  ./tools/nsh keygen "$KEY_DIR/update"
+  ./tools/nsh certify \
+    --root "$KEY_DIR/root.secret" \
+    --key "$KEY_DIR/release.pub" \
+    --apps com.hgdrama.nsh \
+    -o "$KEY_DIR/release.cert"
+fi
+
+ROOT_PUB="$(tr -d '\r\n' < "$KEY_DIR/root.pub")"
+UPDATE_PUB="$(tr -d '\r\n' < "$KEY_DIR/update.pub")"
+
+if [[ "$APPLY" -eq 1 ]]; then
+  python3 - "$ROOT/nsh.json" "$REPO" "$UPDATE_PUB" "$ROOT_PUB" <<'PY'
+import json, sys
+path, repo, update_pub, root_pub = sys.argv[1:5]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+data["updater"] = {
+    "github": repo,
+    "publicKey": update_pub,
+    "packages": {"roots": [root_pub]},
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PY
+  echo "✓ 已将 OTA 公钥写入 nsh.json 的 updater 字段（不含私钥）。"
+else
+  cat <<EOF
+
+请将以下片段加入 nsh.json（或运行 ./tools/setup-ota-keys --apply 自动写入）：
+  "updater": {
+    "github": "$REPO",
+    "publicKey": "$UPDATE_PUB",
+    "packages": { "roots": ["$ROOT_PUB"] }
+  }
+EOF
+fi
+
+cat <<EOF
+
+请妥善离线备份 $KEY_DIR/root.secret（切勿提交到 Git），并执行以下命令配置 GitHub Actions Secrets：
+  gh secret set NSH_RELEASE_KEY  < "$KEY_DIR/release.secret"
+  gh secret set NSH_RELEASE_CERT < "$KEY_DIR/release.cert"
+  gh secret set NSH_UPDATE_KEY   < "$KEY_DIR/update.secret"
+EOF

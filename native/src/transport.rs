@@ -71,21 +71,37 @@ pub(crate) fn client() -> Result<&'static Client, ServiceError> {
         .map_err(Clone::clone)
 }
 
-pub(crate) fn checked_url(raw: &str, domains: &[&str]) -> Result<Url, ServiceError> {
+pub(crate) fn checked_public_https_url(raw: &str) -> Result<Url, ServiceError> {
     let url =
         Url::parse(raw).map_err(|_| ServiceError::new("INVALID_RESPONSE", "请求地址格式无效"))?;
+    let host = url.host_str().unwrap_or("");
     let accepted = url.scheme() == "https"
         && url.port_or_known_default() == Some(443)
         && url.username().is_empty()
         && url.password().is_none()
-        && url.host_str().is_some_and(|host| {
-            domains.iter().any(|domain| {
-                host == *domain
-                    || host
-                        .strip_suffix(domain)
-                        .is_some_and(|prefix| prefix.ends_with('.'))
-            })
-        });
+        && !host.is_empty()
+        && host != "localhost"
+        && !host.ends_with(".localhost")
+        && host
+            .parse::<IpAddr>()
+            .map_or(true, public_address);
+    if accepted {
+        Ok(url)
+    } else {
+        Err(ServiceError::new("SECURITY_BLOCKED", "请求地址不受支持"))
+    }
+}
+
+pub(crate) fn checked_url(raw: &str, domains: &[&str]) -> Result<Url, ServiceError> {
+    let url = checked_public_https_url(raw)?;
+    let accepted = url.host_str().is_some_and(|host| {
+        domains.iter().any(|domain| {
+            host == *domain
+                || host
+                    .strip_suffix(domain)
+                    .is_some_and(|prefix| prefix.ends_with('.'))
+        })
+    });
     if accepted {
         Ok(url)
     } else {

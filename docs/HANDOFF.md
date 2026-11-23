@@ -1,5 +1,29 @@
 # 开发交接
 
+## 2026-11-23 方案 A 改造：Rust 稳定底座 + TSX 可 OTA 视频解析层
+
+- **分支留存**：原完整 Rust 后端工作区改动已完整备份在分支 `backup/rust-full-backend`（`35158f3`）；`master` 保持 clean（`v0.1.2`）；本次方案 A 改造在分支 `feat/tsx-resolver-ota` 上完成。
+- **Rust 稳定底座（`native/`）**：
+  - [native/src/lib.rs](../native/src/lib.rs) 新增 `NativeCrypto` 模块注册到 `hg-drama/native`，向 TSX 暴露永不过时的 `aes128CbcEncrypt` / `aes128CbcDecrypt` 密码学原语。
+  - [native/src/transport.rs](../native/src/transport.rs) 新增 `checked_public_https_url()`（强制 HTTPS 443 + `PublicDns` 防内网 SSRF，不锁死具体上游/CDN 域名，支持未来上游换域名免重发 Rust 宿主）。
+  - [native/src/server.rs](../native/src/server.rs)、[native/src/media/mod.rs](../native/src/media/mod.rs)、[native/src/downloads.rs](../native/src/downloads.rs)：新增 `POST /upstream/fetch`（公网 HTTPS 代理原语）、`POST /play/cache`（本机解密缓存快查）、`POST /play/prefetch`（TSX 预取入队）；`POST /play`、`POST /downloads/start`、`POST /downloads/retry` 均支持直接接收 TSX 解析好的 `variants`，由 Rust 完成并发分片下载、CENC MP4 解密、LRU 缓存与 Range 播放。
+- **TSX 可 OTA 视频解析层（`src/providers/source-resolver/`）**：
+  - 完整迁入纯 TypeScript 解析模块（`types.ts`、`sm3.ts`、`device.ts`、`signature.ts`、`v5.ts`、`index.ts`），仅依赖 NSH 标准库（`buffer`/`crypto`/`zlib`）和 Rust 稳定原语（`NativeCrypto` + `/upstream/fetch`），并绕过 LLRT QuickJS 不支持 `Buffer.*BigUInt64*` 与数组 u8 溢出的运行时差异。
+  - [src/features/player/session.ts](../src/features/player/session.ts)、[GlobalPlayer.tsx](../src/features/player/GlobalPlayer.tsx)、[DramaHomeView.tsx](../src/features/discover/DramaHomeView.tsx)、[DownloadsView.tsx](../src/features/downloads/DownloadsView.tsx) 全部接入 TSX 解析层，在线播放、下一集静默预取、离线下载与重试统一走 TSX 解析，后续上游改协议只需发 `.nshpkg` 热更新包。
+- **OTA 热更新入口**：[src/features/settings/SettingsView.tsx](../src/features/settings/SettingsView.tsx) 接入 `nsh/updater`（`checkForPackage` / `downloadPackage` / `restartToPackage` / `runningPackage` / `shellInfo`），提供「解析包热更新（OTA）」检查与一键下载重启。
+- **上游 `EMPTY_RESPONSE` 修复（纯 TSX，零 Rust 改动）**：
+  - 根因：上游 2026-11-23 将 v5 Medusa 签名 `field 21` 从 `377` 改为 `312`，主播放接口切至 `POST https://reading.snssdk.com/novel/player/multi_video_model/preload/v1`（7.4.5.32 profile、`dr_scene: "preload"`、`device_level: 2`、`User-Agent: okhttp/4.12.0`）。
+  - 修复：[src/providers/source-resolver/v5.ts](../src/providers/source-resolver/v5.ts) 更新 `field 21 = 312`；[src/providers/source-resolver/index.ts](../src/providers/source-resolver/index.ts) 新增 `preload/v1` 主路由并支持仅返回 ByteVC2 时自动经 `fallback_api`（`codec_type=1/3`）协商兼容编码。
+  - 实测：固定样本《宴律》第 1 集（`7503780574541122622`）返回 HTTP 200（18,926 B，5 路清晰度）；当日热播榜前 3 部（《谁让这个文盲修仙的第七季》《穿越八零，我把娘俩宠成宝》《全球死考：刚下刑场你让我去考试一季》）首集 3/3 均拿到 `1080p bytevc1 (HEVC) + spade_a`。
+- **OTA 签名发布工作流**：
+  - 新增本地密钥初始化脚本 [tools/setup-ota-keys](../tools/setup-ota-keys)（默认生成到被忽略的 `.tmp/ota-keys/`，支持 `--apply` 自动将公钥写入 `nsh.json`），[.gitignore](../.gitignore) 新增 `keys/` 与 `*.secret` 防误提交。
+  - 新增 GitHub Actions 工作流 [.github/workflows/ota.yml](../.github/workflows/ota.yml)（支持 `ota-*` 标签或手动触发，自动 `nsh publish` + `nsh update-manifest` 发布 `.nshpkg`、`latest.json` 与 `latest.json.sig`）。
+  - 本地端到端 dry-run 验证：`nsh keygen` → `nsh certify` → `nsh publish`（985 KB `.nshpkg`，42 ms）→ `nsh verify` 全部通过。
+- **验证**：`cargo test` **32/32** 通过；`./tools/nsh check`、`./tools/nsh build`（`283.7 KB js, 1.2 MB bytecode`）通过；`App.test.tsx` **13/13**、`session.test.tsx` **1/1**、`feed.test.tsx` **4/4**、`runtime.test.tsx` **2/2**、`resolver.test.tsx` **6/6** 全部通过。
+- **下一步**：
+  1. 运行 `./tools/setup-ota-keys --apply` 生成你自己的本地免费密钥对（离线妥善保管 `.tmp/ota-keys/root.secret`），按脚本提示执行 3 条 `gh secret set` 命令上传发布密钥。
+  2. 提交并发布一版带 `updater` 公钥的基础客户端安装包后，今后修改 `src/providers/source-resolver/` 只需递增 `nsh.json` 的 `build` 并推送 `ota-<build>` 标签即可自动推送热更新包。
+
 ## 2026-11-23 Rust + TSX 本机迁移
 
 - Rust 后端和 TSX 界面编译进同一个 NSH 应用。Rust 通过 `hg-drama/native` 向 TSX 提供回环连接，继续使用原生播放器、单 Range、旧版下载索引和 macOS 钥匙串会话。Node 参考实现保留用于协议对照测试。

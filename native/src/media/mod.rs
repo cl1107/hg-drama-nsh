@@ -40,7 +40,6 @@ use crate::{ServiceError, transport};
 pub(crate) const MAX_MEDIA_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const CHUNK_BYTES: usize = 1024 * 1024;
 pub(crate) const CHUNK_CONCURRENCY: usize = 6;
-const MEDIA_DOMAINS: &[&str] = &["qznovelvod.com", "fqnovelvod.com", "douyinvod.com"];
 
 /// The result handed to the local media server. `metadata` contains only
 /// playback metadata and never a content key or signed remote URL.
@@ -62,6 +61,76 @@ pub(crate) struct Variant {
     pub(crate) quality: String,
     pub(crate) user_agent: String,
     pub(crate) content_key: Option<[u8; 16]>,
+}
+
+impl Variant {
+    pub(crate) fn from_json(value: &Value) -> Result<Self, ServiceError> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| ServiceError::new("INVALID_REQUEST", "片源参数格式无效"))?;
+        let url = object
+            .get("url")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| ServiceError::new("INVALID_REQUEST", "片源地址缺失"))?
+            .to_owned();
+        let codec = object
+            .get("codec")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| ServiceError::new("INVALID_REQUEST", "片源编码缺失"))?
+            .to_owned();
+        let quality = object
+            .get("quality")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("auto")
+            .to_owned();
+        let user_agent = object
+            .get("userAgent")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("Mozilla/5.0")
+            .to_owned();
+        let content_key = match object.get("contentKey") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(hex_key)) if hex_key.is_empty() => None,
+            Some(Value::String(hex_key)) => {
+                let bytes = hex::decode(hex_key)
+                    .map_err(|_| ServiceError::new("INVALID_REQUEST", "片源内容密钥格式无效"))?;
+                let key: [u8; 16] = bytes
+                    .try_into()
+                    .map_err(|_| ServiceError::new("INVALID_REQUEST", "片源内容密钥长度无效"))?;
+                Some(key)
+            }
+            _ => return Err(ServiceError::new("INVALID_REQUEST", "片源内容密钥格式无效")),
+        };
+        Ok(Self {
+            url,
+            codec,
+            quality,
+            user_agent,
+            content_key,
+        })
+    }
+}
+
+pub(crate) fn parse_variants_input(value: Option<&Value>) -> Result<Option<Vec<Variant>>, ServiceError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let items = value
+        .as_array()
+        .filter(|items| !items.is_empty() && items.len() <= 32)
+        .ok_or_else(|| ServiceError::new("INVALID_REQUEST", "片源列表无效"))?;
+    let variants = items
+        .iter()
+        .map(Variant::from_json)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(variants))
 }
 
 impl TryFrom<SourceVariant> for Variant {
@@ -659,6 +728,37 @@ pub(crate) async fn details(series_id: &str) -> Result<Value, ServiceError> {
     value
 }
 
+/// Prepares one episode using variants already resolved by the OTA-updatable TSX layer.
+pub(crate) async fn prepare_with_variants(
+    series_id: &str,
+    episode_id: Option<&str>,
+    quality: &str,
+    variants: Vec<Variant>,
+) -> Result<Prepared, ServiceError> {
+    let detail = details(series_id).await?;
+    let episodes = detail
+        .get("episodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ServiceError::new("INVALID_DETAIL", "剧集分集列表缺失"))?;
+    let episode = match episode_id {
+        Some(episode_id) => episodes
+            .iter()
+            .find(|episode| episode.get("episodeId").and_then(Value::as_str) == Some(episode_id))
+            .cloned(),
+        None => episodes.first().cloned(),
+    }
+    .ok_or_else(|| ServiceError::new("INVALID_EPISODE", "所选分集不属于本剧"))?;
+    let metadata = {
+        let mut metadata = detail;
+        metadata
+            .as_object_mut()
+            .ok_or_else(|| ServiceError::new("INVALID_DETAIL", "剧集详情格式异常"))?
+            .insert("episode".into(), episode);
+        metadata
+    };
+    prepare_from_variants(metadata, variants, quality).await
+}
+
 /// Prepares one episode by selecting a verified source, downloading it into
 /// bounded memory, and decrypting non-fragmented CENC samples when required.
 pub(crate) async fn prepare(
@@ -724,7 +824,7 @@ async fn request_bytes(
     range: Option<(usize, usize)>,
     max_bytes: usize,
 ) -> Result<HttpBytes, ServiceError> {
-    let url = crate::transport::checked_url(&candidate.url, MEDIA_DOMAINS)?;
+    let url = crate::transport::checked_public_https_url(&candidate.url)?;
     let mut request = client.get(url).timeout(Duration::from_secs(90));
     let user_agent = reqwest::header::HeaderValue::from_str(&candidate.user_agent)
         .map_err(|_| ServiceError::new("SECURITY_BLOCKED", "媒体 User-Agent 无效"))?;

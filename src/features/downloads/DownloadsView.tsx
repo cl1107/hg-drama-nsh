@@ -1,6 +1,7 @@
 import { signal, View, Text, List, cleanup } from "nsh";
 import { Button, FilterChip, StatusView } from "../../ui/controls";
 import { serviceGet, servicePost } from "../../service-client";
+import { retryEpisodeDownload } from "../player/session";
 
 interface DownloadTask {
   id: string;
@@ -60,7 +61,12 @@ export function DownloadsView(props: {
 
   const retryTask = async (id: string) => {
     try {
-      await servicePost("/downloads/retry", { id });
+      const target = items().find(t => t.id === id);
+      if (target) {
+        await retryEpisodeDownload(target);
+      } else {
+        await servicePost("/downloads/retry", { id });
+      }
       await refresh();
     } catch (e) {
       error.set(e instanceof Error ? e.message : "重试失败");

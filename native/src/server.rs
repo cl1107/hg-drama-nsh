@@ -168,6 +168,43 @@ impl Service {
         None
     }
 
+    fn prefetch_with_variants(
+        self: &Arc<Self>,
+        series: &str,
+        episode: &str,
+        quality: &str,
+        variants: Vec<media::Variant>,
+    ) {
+        let key = (series.to_owned(), episode.to_owned(), quality.to_owned());
+        let mut slot = self.prefetch.lock().expect("prefetch lock");
+        if slot.as_ref().is_some_and(|existing| existing.key == key) {
+            return;
+        }
+        let cancel = CancellationToken::new();
+        let (send, result) = tokio::sync::watch::channel(None);
+        if let Some(previous) = slot.replace(Prefetch {
+            key: key.clone(),
+            cancel: cancel.clone(),
+            result,
+        }) {
+            previous.cancel.cancel();
+        }
+        let service = Arc::clone(self);
+        tokio::spawn(async move {
+            let (series, episode, quality) = key;
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {}
+                result = media::prepare_with_variants(&series, Some(&episode), &quality, variants) => {
+                    let result = result.map(|prepared| {
+                        service.cache_media(prepared.data.into(), prepared.metadata, Some(&quality))
+                    });
+                    let _ = send.send(Some(result));
+                }
+            }
+        });
+    }
+
     fn prefetch_next(self: &Arc<Self>, metadata: &Value, quality: &str) {
         let Some(series) = metadata["seriesId"].as_str() else {
             return;
@@ -309,7 +346,12 @@ async fn dispatch(
         return Err(ServiceError::new("NOT_FOUND", "请求地址不存在"));
     }
 
-    let bytes = to_bytes(body, if path == "/play" { 2048 } else { 4096 })
+    let body_limit = match path {
+        "/upstream/fetch" => 2 * 1024 * 1024,
+        "/play" | "/play/prefetch" | "/downloads/start" | "/downloads/retry" => 256 * 1024,
+        _ => 4096,
+    };
+    let bytes = to_bytes(body, body_limit)
         .await
         .map_err(|_| ServiceError::new("INVALID_REQUEST", "请求过大"))?;
     let input = if bytes.iter().all(u8::is_ascii_whitespace) {
@@ -322,8 +364,32 @@ async fn dispatch(
     };
 
     match path {
+        "/upstream/fetch" => upstream_fetch(&input).await,
+        "/play/cache" => {
+            let (series, episode, quality) = playback_input(&input)?;
+            let hit = episode.and_then(|ep| service.cached_playback(series, ep, quality));
+            Ok(match hit {
+                Some(playback) => json!({ "hit": true, "playback": playback }),
+                None => json!({ "hit": false }),
+            })
+        }
+        "/play/prefetch" => {
+            let (series, episode, quality) = playback_input(&input)?;
+            let Some(episode) = episode else {
+                return Err(ServiceError::new("INVALID_REQUEST", "预取需要指定分集编号"));
+            };
+            let variants = media::parse_variants_input(input.get("variants"))?
+                .ok_or_else(|| ServiceError::new("INVALID_REQUEST", "预取缺少片源列表"))?;
+            if service.cached_playback(series, episode, quality).is_some() {
+                return Ok(json!({ "cached": true }));
+            }
+            service.prefetch_with_variants(series, episode, quality, variants);
+            Ok(json!({ "started": true }))
+        }
         "/play" => {
             let (series, episode, quality) = playback_input(&input)?;
+            let provided_variants = media::parse_variants_input(input.get("variants"))?;
+            let has_provided = provided_variants.is_some();
             let cancel = CancellationToken::new();
             if let Some(previous) = service
                 .active
@@ -351,12 +417,17 @@ async fn dispatch(
                                 return Ok(metadata.clone());
                             }
                         }
-                        let prepared = media::prepare(series, episode, quality).await?;
+                        let prepared = match provided_variants {
+                            Some(variants) => media::prepare_with_variants(series, episode, quality, variants).await?,
+                            None => media::prepare(series, episode, quality).await?,
+                        };
                         Ok(service.cache_media(prepared.data.into(), prepared.metadata, Some(quality)))
                     } => result?,
                 }
             };
-            service.prefetch_next(&metadata, quality);
+            if !has_provided {
+                service.prefetch_next(&metadata, quality);
+            }
             Ok(metadata)
         }
         "/detail" => media::details(identifier(&input["seriesId"], "剧集编号无效")?).await,
@@ -389,6 +460,74 @@ async fn dispatch(
         }
         _ => Err(ServiceError::new("NOT_FOUND", "请求地址不存在")),
     }
+}
+
+async fn upstream_fetch(input: &Value) -> Result<Value, ServiceError> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+
+    let method = match input["method"].as_str().unwrap_or("GET") {
+        "GET" => reqwest::Method::GET,
+        "POST" => reqwest::Method::POST,
+        _ => return Err(ServiceError::new("INVALID_REQUEST", "仅支持 GET/POST 上游请求")),
+    };
+    let raw_url = input["url"]
+        .as_str()
+        .ok_or_else(|| ServiceError::new("INVALID_REQUEST", "缺少上游请求地址"))?;
+    let url = crate::transport::checked_public_https_url(raw_url)?;
+    let timeout_ms = input["timeoutMs"]
+        .as_u64()
+        .unwrap_or(15_000)
+        .clamp(1_000, 30_000);
+    let client = crate::transport::client()?.clone();
+    let mut request = client
+        .request(method, url)
+        .timeout(Duration::from_millis(timeout_ms));
+    if let Some(headers) = input.get("headers").and_then(Value::as_object) {
+        if headers.len() > 64 {
+            return Err(ServiceError::new("INVALID_REQUEST", "请求头数量超出限制"));
+        }
+        for (name, value) in headers {
+            let Some(value) = value.as_str() else {
+                continue;
+            };
+            request = request.header(name.as_str(), value);
+        }
+    }
+    if let Some(body_b64) = input.get("bodyBase64").and_then(Value::as_str)
+        && !body_b64.is_empty()
+    {
+        let decoded = B64
+            .decode(body_b64)
+            .map_err(|_| ServiceError::new("INVALID_REQUEST", "请求体 Base64 无效"))?;
+        request = request.body(decoded);
+    }
+    let response = request.send().await.map_err(|error| {
+        ServiceError::new(
+            if error.is_timeout() {
+                "ETIMEDOUT"
+            } else {
+                "ERR_NETWORK"
+            },
+            if error.is_timeout() {
+                "上游请求超时"
+            } else {
+                "上游请求失败"
+            },
+        )
+    })?;
+    let status = response.status().as_u16();
+    let mut response_headers = serde_json::Map::new();
+    for (name, value) in response.headers() {
+        if let Ok(text) = value.to_str() {
+            response_headers.insert(name.as_str().to_owned(), Value::String(text.to_owned()));
+        }
+    }
+    let body = crate::transport::read_body(response, 8 * 1024 * 1024).await?;
+    Ok(json!({
+        "status": status,
+        "headers": response_headers,
+        "bodyBase64": B64.encode(&body),
+    }))
 }
 
 pub(crate) fn identifier<'a>(value: &'a Value, message: &str) -> Result<&'a str, ServiceError> {
@@ -486,6 +625,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(browser.status(), StatusCode::FORBIDDEN);
+
+        let blocked = client
+            .post(format!("{}/upstream/fetch", service.base_url))
+            .bearer_auth(&service.token)
+            .json(&json!({"method": "GET", "url": "http://127.0.0.1:80/secret"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(blocked.status(), StatusCode::BAD_GATEWAY);
+        let blocked_body: Value = blocked.json().await.unwrap();
+        assert_eq!(blocked_body["code"], "SECURITY_BLOCKED");
+
+        let cache_miss = client
+            .post(format!("{}/play/cache", service.base_url))
+            .bearer_auth(&service.token)
+            .json(&json!({"seriesId": "123", "episodeId": "456", "quality": "auto"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(cache_miss.status(), StatusCode::OK);
+        let cache_body: Value = cache_miss.json().await.unwrap();
+        assert_eq!(cache_body["hit"], false);
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@ import { Icon, IconButton, type IconName } from "../../ui/icons";
 import { playbackState, startPlayback, cancelPlayback, retryPlayback, type Playback } from "../player/session";
 import { preferences, updatePreferences, subscriptions, isFavorite, isLiked, isSubscribed, recordWatchProgress, toggleFavorite, toggleLike, toggleSubscription, type QualityOption, type DanmakuFontWeight, type DanmakuSpeed } from "../../stores/user-data";
 import { servicePost } from "../../service-client";
+import { startEpisodeDownload } from "./session";
 import { createRecommendationFeed, type Recommendation, type RecommendationChannel } from "../recommend/feed";
 import { DanmakuLayer, DANMAKU_COLORS, resolveDanmakuFontSize } from "./DanmakuLayer";
 
@@ -217,7 +218,7 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
  const download = async () => {
   const item = ready(); if (!item || busyAction()) return;
   busyAction.set(true);
-  try { await servicePost("/downloads/start", {seriesId:item.seriesId,episodeId:item.episode.episodeId,quality:quality()}); props.onNotify("已加入下载队列"); }
+  try { await startEpisodeDownload(item.seriesId, item.episode.episodeId, quality()); props.onNotify("已加入下载队列"); }
   catch (error) { props.onNotify(error instanceof Error ? error.message : "下载失败，请重试"); }
   finally { busyAction.set(false); }
  };

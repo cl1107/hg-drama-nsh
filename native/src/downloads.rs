@@ -117,6 +117,7 @@ impl Downloads {
         let mut state = self.0.state.lock().expect("downloads lock");
         if operation == "/downloads/start" {
             let (series, episode, quality) = playback_input(input)?;
+            let variants = media::parse_variants_input(input.get("variants"))?;
             let task = Task {
                 id: random_token::<12>(),
                 series_id: series.into(),
@@ -136,7 +137,7 @@ impl Downloads {
             };
             let response = task.public_value();
             self.0.update(&mut state, task.clone())?;
-            self.start(&mut state, task);
+            self.start(&mut state, task, variants);
             return Ok(response);
         }
         if operation == "/downloads/clear" {
@@ -161,11 +162,12 @@ impl Downloads {
         let mut task = state.tasks.get(id).cloned().ok_or_else(task_not_found)?;
         match operation {
             "/downloads/retry" if matches!(task.status, Status::Failed | Status::Cancelled) => {
+                let variants = media::parse_variants_input(input.get("variants"))?;
                 task.status = Status::Downloading;
                 task.bytes = 0;
                 task.error = None;
                 self.0.update(&mut state, task.clone())?;
-                self.start(&mut state, task.clone());
+                self.start(&mut state, task.clone(), variants);
             }
             "/downloads/retry" => {}
             "/downloads/cancel" if task.status == Status::Downloading => {
@@ -215,18 +217,22 @@ impl Downloads {
         ))
     }
 
-    fn start(&self, state: &mut State, mut task: Task) {
+    fn start(&self, state: &mut State, mut task: Task, variants: Option<Vec<media::Variant>>) {
         let cancel = CancellationToken::new();
         state.running.insert(task.id.clone(), cancel.clone());
         let store = Arc::clone(&self.0);
         tokio::spawn(async move {
             let result = tokio::select! {
                 _ = cancel.cancelled() => return,
-                result = media::prepare(
-                    &task.series_id,
-                    (!task.episode_id.is_empty()).then_some(task.episode_id.as_str()),
-                    &task.quality,
-                ) => result,
+                result = async {
+                    let episode_id = (!task.episode_id.is_empty()).then_some(task.episode_id.as_str());
+                    match variants {
+                        Some(variants) => {
+                            media::prepare_with_variants(&task.series_id, episode_id, &task.quality, variants).await
+                        }
+                        None => media::prepare(&task.series_id, episode_id, &task.quality).await,
+                    }
+                } => result,
             };
             let task_id = task.id.clone();
             let _ = tokio::task::spawn_blocking(move || {

@@ -1,0 +1,114 @@
+name: OTA Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: 'Release notes for this OTA package'
+        required: false
+        default: '更新视频解析与 TSX 代码'
+      publish_release:
+        description: 'Publish to GitHub Releases (requires updater keys in nsh.json and Secrets)'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'ota-[0-9]+'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ota-package-${{ github.ref }}
+
+env:
+  NSH_VERSION: '0.6.1'
+  RUSTUP_TOOLCHAIN: '1.97.0'
+
+jobs:
+  ota:
+    name: Build & Publish Signed .nshpkg
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install NSH and Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          mkdir -p .tools "$RUNNER_TEMP/ota-tools"
+          cd "$RUNNER_TEMP/ota-tools"
+          archive=nsh-linux-x86_64.tar.gz
+          curl -fsSL --retry 3 "https://github.com/longbridge/nsh/releases/download/v${NSH_VERSION}/$archive" -o "$archive"
+          sha256sum -c <<EOF
+          9a7ac692f1c229df476be8ff83a3c5912d271453b644e313f02cb19d18696070  $archive
+          EOF
+          tar -xzf "$archive" -C "$GITHUB_WORKSPACE/.tools"
+
+      - name: Check and build signed OTA package
+        shell: bash
+        env:
+          NSH_RELEASE_KEY: ${{ secrets.NSH_RELEASE_KEY }}
+          NSH_RELEASE_CERT: ${{ secrets.NSH_RELEASE_CERT }}
+          NSH_UPDATE_KEY: ${{ secrets.NSH_UPDATE_KEY }}
+          OTA_NOTES: ${{ github.event.inputs.notes || '更新视频解析与 TSX 代码' }}
+        run: |
+          test -n "$NSH_RELEASE_KEY" || { echo "Missing secret NSH_RELEASE_KEY" >&2; exit 1; }
+          test -n "$NSH_RELEASE_CERT" || { echo "Missing secret NSH_RELEASE_CERT" >&2; exit 1; }
+          test -n "$NSH_UPDATE_KEY" || { echo "Missing secret NSH_UPDATE_KEY" >&2; exit 1; }
+
+          keydir="$RUNNER_TEMP/ota-keys"
+          mkdir -p "$keydir" dist
+          chmod 700 "$keydir"
+          printf '%s\n' "$NSH_RELEASE_KEY" > "$keydir/release.secret"
+          printf '%s\n' "$NSH_RELEASE_CERT" > "$keydir/release.cert"
+          printf '%s\n' "$NSH_UPDATE_KEY" > "$keydir/update.secret"
+          printf '%s\n' "$OTA_NOTES" > dist/NOTES.md
+
+          ./tools/nsh check
+          build_num=$(python3 -c 'import json; print(json.load(open("nsh.json"))["build"])')
+          pkg="dist/com.hgdrama.nsh-${build_num}.nshpkg"
+          ./tools/nsh publish \
+            --key "$keydir/release.secret" \
+            --cert "$keydir/release.cert" \
+            -o "$pkg"
+          ./tools/nsh update-manifest \
+            --package "$pkg" \
+            --notes dist/NOTES.md \
+            --key "$keydir/update.secret" \
+            -o dist
+          rm -rf "$keydir"
+          echo "BUILD_NUM=$build_num" >> "$GITHUB_ENV"
+          echo "PKG_FILE=$pkg" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ota-package
+          path: |
+            dist/*.nshpkg
+            dist/latest.json
+            dist/latest.json.sig
+          if-no-files-found: error
+
+      - name: Publish OTA Release
+        if: github.ref_type == 'tag' || inputs.publish_release == true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            tag="ota-${BUILD_NUM}"
+          fi
+          gh release create "$tag" \
+            "$PKG_FILE" \
+            dist/latest.json \
+            dist/latest.json.sig \
+            --title "OTA 解析包 #${BUILD_NUM}" \
+            --notes-file dist/NOTES.md

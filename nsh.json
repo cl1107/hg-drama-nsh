@@ -2,18 +2,24 @@
   "name": "红果短剧-NSH",
   "icon": "assets/app-icon.png",
   "id": "com.hgdrama.nsh",
-  "version": "0.1.2",
-  "build": 12,
+  "version": "0.2.0",
+  "build": 13,
   "rust": "native",
   "capabilities": {
     "application": true,
-    "network": { "hosts": ["*"] },
+    "network": {
+      "hosts": [
+        "*"
+      ]
+    },
     "clipboard": true,
     "statusBar": true
   },
   "appearance": "dark",
   "window": {
-    "titleBar": { "style": "hidden" }
+    "titleBar": {
+      "style": "hidden"
+    }
   },
   "theme": {
     "cssVars": {
@@ -63,6 +69,15 @@
         "media-panel": "#17171dc9",
         "media-scrim": "#00000099"
       }
+    }
+  },
+  "updater": {
+    "github": "cl1107/hg-drama-nsh",
+    "publicKey": "d99dYIGHBfgflGPEWo+qjvnrfk+e58rSRgqW+udEMdc=",
+    "packages": {
+      "roots": [
+        "Yki9IsSfKckrm3htq1aOkEt8ftE5hqBlkoi24UI+6/A="
+      ]
     }
   }
 }

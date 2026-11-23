@@ -4,7 +4,7 @@ import { Button, FilterChip, StatusView } from "../../ui/controls";
 import { Icon } from "../../ui/icons";
 import { detailState } from "./discover-store";
 import { isFavorite, isLiked, isSubscribed, preferences, toggleFavorite, toggleLike, toggleSubscription } from "../../stores/user-data";
-import { servicePost } from "../../service-client";
+import { startEpisodeDownload } from "../player/session";
 
 type Episode = { episodeId: string; index: number };
 // 先折叠渲染前几集，长剧（数百集）点「显示全部」再铺开，避免首屏过重。
@@ -26,7 +26,7 @@ export function DramaHomeView(props: {
     if (busyDownload()) return;
     busyDownload.set(true);
     try {
-      await servicePost("/downloads/start", { seriesId, episodeId, quality: preferences().defaultQuality });
+      await startEpisodeDownload(seriesId, episodeId, preferences().defaultQuality);
       props.onNotify?.("已加入下载队列");
     } catch (error) {
       props.onNotify?.(error instanceof Error ? error.message : "下载失败，请重试");
