@@ -4,6 +4,13 @@
   "id": "com.hgdrama.nsh",
   "version": "0.1.2",
   "build": 12,
+  "rust": "native",
+  "capabilities": {
+    "application": true,
+    "network": { "hosts": ["*"] },
+    "clipboard": true,
+    "statusBar": true
+  },
   "appearance": "dark",
   "window": {
     "titleBar": { "style": "hidden" }

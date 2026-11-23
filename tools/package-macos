@@ -8,65 +8,24 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 1
 fi
 
-node_bin=$(node -p 'process.execPath')
-node_license="$(dirname "$node_bin")/../LICENSE"
-if ! "$node_bin" -e 'process.exit(Number(process.versions.node.split(".")[0]) < 24 ? 1 : 0)' ||
-   [ ! -f "$node_license" ] ||
-   otool -L "$node_bin" | awk 'NR > 1 && $1 !~ /^\/(usr\/lib|System\/Library)\// {found = 1} END {exit !found}'; then
-  echo "打包需要 Node.js 24+ 官方 macOS 发行版及其 LICENSE（例如通过 fnm 安装）" >&2
-  exit 1
-fi
-
-mkdir -p .tmp .nsh/out
-stage=$(mktemp -d "$root/.tmp/macos-package.XXXXXX")
-trap 'rm -rf "$stage"' EXIT
-trap 'exit 1' HUP INT TERM
-mkdir "$stage/.tmp"
-cp App.tsx nsh.json "$stage/"
-cp -R src assets "$stage/"
-printf '%s\n' 'export const serviceConfig = { baseUrl: "", token: "" };' > "$stage/.tmp/service-config.ts"
-
-# The Finder launcher provides fresh credentials at runtime, never at build time.
-"$node_bin" - "$stage/nsh.json" <<'JS'
-const fs = require('node:fs');
-const file = process.argv[2];
-const config = JSON.parse(fs.readFileSync(file));
-config.capabilities = {
-  application: true,
-  network: { hosts: ['*'] },
-  clipboard: true,
-  statusBar: true,
-  process: { env: ['HG_NSH_SERVICE_URL', 'HG_NSH_SERVICE_TOKEN'] },
-};
-fs.writeFileSync(file, JSON.stringify(config, null, 2));
-JS
-
+nsh_cli=${NSH_CLI:-"$root/.tools/nsh/bin/nsh"}
+nsh_home=$(CDPATH= cd -- "$(dirname "$nsh_cli")/.." && pwd)
+mkdir -p .nsh/out
 output=$(mktemp -d "$root/.nsh/out/macos.XXXXXX")
-(
-  cd "$stage"
-  "$root/tools/nsh" package --target macos --out "$output" .
-)
-app="$output/红果短剧-NSH.app"
-macos="$app/Contents/MacOS"
-backend="$app/Contents/Resources/backend"
-mkdir -p "$backend/service/vendor/hongguo" "$backend/src/media" "$backend/src/providers"
-for file in auth danmaku discover downloads keychain keep-awake playback range server transport; do
-  cp "service/$file.cjs" "$backend/service/"
-done
-cp service/vendor/hongguo/*.js service/vendor/hongguo/LICENSE service/vendor/hongguo/NOTICE \
-  service/vendor/hongguo/THIRD-PARTY-NOTICES.md "$backend/service/vendor/hongguo/"
-cp src/media/cenc.cjs "$backend/src/media/"
-cp src/providers/catalog.ts "$backend/src/providers/"
-cp LICENSE "$backend/LICENSE"
-cp "$node_license" "$app/Contents/Resources/Node-LICENSE"
-cp .tools/nsh/LICENSE-APACHE "$app/Contents/Resources/NSH-LICENSE-APACHE"
 
-cp "$node_bin" "$macos/node"
-"$macos/node" -e 'require(process.argv[1])' "$backend/service/server.cjs"
-cp tools/macos-launcher "$macos/Launcher"
-/usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable Launcher' "$app/Contents/Info.plist"
-codesign --force --sign - "$macos/node"
-codesign --force --sign - "$macos/NSH"
+# macOS 27 rejects some compile-time Rust libraries after Cargo's debug-info strip.
+CARGO_PROFILE_RELEASE_STRIP=${CARGO_PROFILE_RELEASE_STRIP:-none} \
+  NSH_RUNTIME=${NSH_RUNTIME:-"$nsh_home/runtime"} "$nsh_cli" package --target macos --out "$output" .
+app="$output/红果短剧-NSH.app"
+resources="$app/Contents/Resources"
+mkdir -p "$resources/licenses/hongguo"
+cp LICENSE "$resources/licenses/PROJECT-LICENSE"
+cp "$nsh_home/LICENSE-APACHE" "$resources/licenses/NSH-LICENSE-APACHE"
+cp service/vendor/hongguo/LICENSE service/vendor/hongguo/NOTICE \
+  service/vendor/hongguo/THIRD-PARTY-NOTICES.md "$resources/licenses/hongguo/"
+
+test ! -e "$app/Contents/MacOS/node"
+test ! -e "$resources/backend"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
 printf '%s\n' "$app"

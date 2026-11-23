@@ -1,10 +1,15 @@
-import process from "process";
-import { serviceConfig as devConfig } from "../.tmp/service-config";
+import { LocalService } from "hg-drama/native";
 
-const { HG_NSH_SERVICE_URL, HG_NSH_SERVICE_TOKEN } = process.env;
-export const serviceConfig = HG_NSH_SERVICE_URL && HG_NSH_SERVICE_TOKEN
-  ? { baseUrl: HG_NSH_SERVICE_URL, token: HG_NSH_SERVICE_TOKEN }
-  : devConfig;
+function startLocalService() {
+  try {
+    return LocalService.connection();
+  } catch (error) {
+    console.error("本机服务启动失败", error);
+    return { baseUrl: "", token: "" };
+  }
+}
+
+export const serviceConfig = startLocalService();
 
 export function hasService(): boolean {
   return Boolean(serviceConfig.baseUrl && serviceConfig.token);
@@ -16,7 +21,7 @@ export async function servicePost<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   if (!hasService()) {
-    throw new Error("请先运行 ./tools/dev 启动本机服务");
+    throw new Error("本机服务未启动");
   }
   const response = await fetch(`${serviceConfig.baseUrl}${path}`, {
     method: "POST",
@@ -37,7 +42,7 @@ export async function servicePost<T>(
 
 export async function serviceGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   if (!hasService()) {
-    throw new Error("请先运行 ./tools/dev 启动本机服务");
+    throw new Error("本机服务未启动");
   }
   const response = await fetch(`${serviceConfig.baseUrl}${path}`, {
     method: "GET",

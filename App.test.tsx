@@ -1,6 +1,6 @@
 import { expect, open, test } from "nsh/test";
 import { homeHtml } from "./tests/fixtures/home";
-import { serviceConfig } from "./.tmp/service-config";
+import { serviceConfig } from "./src/service-client";
 const candidate = {id:"7503745441910017049",title:"宴律，你的白月光回国了",cover:"",episodes:76,tags:["都市"]};
 const categories = {items:[candidate],selectors:[],hasMore:false,nextOffset:0,sessionId:"test"};
 const routes = {

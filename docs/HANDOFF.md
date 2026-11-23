@@ -1,6 +1,13 @@
 # 开发交接
 
-## 2026-11-23 GitHub 双平台发布
+## 2026-11-23 Rust + TSX 本机迁移
+
+- Rust 后端和 TSX 界面编译进同一个 NSH 应用。Rust 通过 `hg-drama/native` 向 TSX 提供回环连接，继续使用原生播放器、单 Range、旧版下载索引和 macOS 钥匙串会话。Node 参考实现保留用于协议对照测试。
+- macOS arm64 已使用 NSH 0.6.1 和 Rust 1.97.0 本地构建。无 Node 的环境中启动应用，确认同进程监听回环端口；未授权请求返回 401。原生播放器通过 Rust 服务读取本地媒体，加载 211.8 秒样本并从 60 秒继续播放。独立候选包从 168.4 MiB 降至 45.5 MiB，ZIP 为 16.1 MiB。
+- 31 项 Rust 离线测试及 14 项 TSX 测试通过，真实热播榜和搜索通过。固定播放样本及两部当日榜单剧在 Rust 和旧 Node 实现均复现上游 HTTP 200 空响应。扫码确认、短信登录和云端同步仍需真实账号验收。
+- Windows 打包脚本和 GitHub 工作流已切到 Rust 构建，ZIP 脚本用替代构建产物验证过中文文件名和目录分隔符。下一步在 Windows runner 构建，再按 [平台验收要求](VALIDATION.md) 验证 Windows 启动与播放。
+
+## 2026-11-23 v0.1.2 GitHub 双平台发布
 
 - [Desktop packages](https://github.com/cl1107/hg-drama-nsh/actions/workflows/release.yml) 使用 NSH 0.6.1 和 Node.js 24.22.1 的官方发行档，校验 SHA-256 后在原生 runner 生成 macOS arm64、Windows x64 ZIP。推送与 `nsh.json` 版本一致的标签后，由 GitHub Actions 发布两份 ZIP 和校验文件。手动运行只生成构建产物。
 - Windows 免安装包补齐 `danmaku.cjs`，按 NSH 输出目录精确定位 UI 可执行文件。ZIP 保留中文文件名，并从 v0.1.2 起统一使用标准的正斜杠目录分隔符。两个打包脚本均检查内置 Node.js 能加载随包发布的服务，并附带 NSH、Node.js 及项目许可证。

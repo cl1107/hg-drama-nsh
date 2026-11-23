@@ -2,7 +2,7 @@
 
 ## 技术选择
 
-UI 使用 NSH TSX + signals + app-owned styled components，业务与表现分层。纯 TSX 是首选实施模式；媒体重活和凭证存储是否需要 native host，由 P0 实测决定。Node 进程、Electron 服务端、React、浏览器 DOM 都不属于默认运行环境。
+UI 使用 NSH TSX、signals 和项目自有组件。Rust 后端编译进同一个应用进程。TSX 通过 `hg-drama/native` 读取本机会话连接，继续使用回环 HTTP 和原生 Video，保留应用层接口与媒体 Range 语义。
 
 官方入口：[TSX/项目结构](https://nsh.dev/docs/project-structure.md)、[原生组件](https://nsh.dev/docs/native-components.md)、[能力限制](https://nsh.dev/docs/sandbox-and-capabilities.md)。在线文档随 main 变化，精确导出以固定 CLI 的 `.nsh/types` 为准。
 

@@ -6,7 +6,7 @@
 
 ### 不用安卓模拟器，直接在电脑上原生追红果短剧
 
-基于 **NSH 0.6.1 (TSX)** 与本机 **Node 24** 媒体服务构建的红果短剧第三方桌面客户端，先在 macOS 本机完成验证，持续向跨平台扩展。
+基于 **NSH 0.6.1、Rust 与 TSX** 的红果短剧第三方桌面客户端。Rust 在应用进程中运行本机媒体服务，TSX 编写原生界面。
 
 **沉浸式刷剧 · 自动连播 · 多维找剧 · 9 大排行榜 · 剧集主页 · 离线下载 · 云端同步**
 
@@ -34,7 +34,8 @@
 
 ### 环境要求
 
-- **Node.js 24+**
+- **Rust 1.97.0** 和 Xcode 命令行工具
+- **Node.js 24+** 仅用于运行旧版协议参考测试
 - **NSH 0.6.1 (2f51d86)**：官方发行档解压至 `.tools/nsh`，通过 `./tools/nsh` 调用
 
 ### 常用命令
@@ -49,8 +50,11 @@
 ./tools/nsh test App.test.tsx
 ./tools/nsh test src/features/player/session.test.tsx
 
-# Node 服务端单测
-node --test service/*.test.cjs service/vendor/hongguo/*.test.cjs
+# Rust 服务端测试
+cargo test --manifest-path native/Cargo.toml
+
+# 真实上游目录与播放探针
+cargo test --manifest-path native/Cargo.toml live_native -- --ignored --test-threads=1
 
 # 在线目录接口检查
 ./tools/check-live.sh
@@ -62,7 +66,7 @@ node --test service/*.test.cjs service/vendor/hongguo/*.test.cjs
 ./tools/package-macos
 ```
 
-脚本使用固定版本 NSH 与同架构 Node.js 24+ 运行时，在 `.nsh/out/` 下生成临时签名的 `红果短剧-NSH.app`。拖入「应用程序」后，若首次在其他 Mac 上打开提示“已损坏或无法验证”，可在终端执行：
+脚本使用固定版本 NSH 与 Rust，在 `.nsh/out/` 下生成临时签名的 `红果短剧-NSH.app`。解压后可直接启动。拖入「应用程序」后，若首次在其他 Mac 上打开提示“已损坏或无法验证”，可在终端执行：
 
 ```bash
 xattr -cr /Applications/红果短剧-NSH.app
@@ -70,7 +74,7 @@ xattr -cr /Applications/红果短剧-NSH.app
 
 ### GitHub Release
 
-[Releases](https://github.com/cl1107/hg-drama-nsh/releases) 提供 macOS Apple Silicon 应用包和 Windows x64 免安装包，均内置 Node.js 和本机播放服务。macOS 包使用临时签名，Windows 启动器未签名。
+[Releases](https://github.com/cl1107/hg-drama-nsh/releases) 提供 macOS Apple Silicon 应用包和 Windows x64 免安装包。v0.1.2 及之前的发行包内置 Node.js。采用 Rust + TSX 的新构建把本机服务编译进 NSH 应用。
 
 更新 `nsh.json` 的 `version` 和 `build` 并提交后，推送与版本一致的 `vX.Y.Z` 标签。GitHub Actions 会在两端构建成功后发布两个 ZIP 和 `SHA256SUMS.txt`。也可从 Actions 手动运行 `Desktop packages`，仅构建并保留产物供验证。
 
@@ -83,7 +87,7 @@ xattr -cr /Applications/红果短剧-NSH.app
 上游正片受加密保护，客户端负责在本地解密后通过本机回环服务（`127.0.0.1`）以 Range 流形式提供给内置播放器播放。
 
 **登录态与本地数据保存在哪里？**  
-macOS 上离线下载与本地数据位于 `~/Library/Application Support/com.hgdrama.nsh/`；网页会话凭据保存在本机系统钥匙串中，仅由本地 Node 服务进程使用，不会回传到前端界面。
+macOS 上离线下载与本地数据位于 `~/Library/Application Support/com.hgdrama.nsh/`；网页会话凭据保存在本机系统钥匙串中，仅由本机服务使用，不会回传到前端界面。
 
 ## 📚 开发文档索引
 

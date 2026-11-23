@@ -14,7 +14,7 @@ concurrency:
 
 env:
   NSH_VERSION: '0.6.1'
-  NODE_VERSION: '24.22.1'
+  RUSTUP_TOOLCHAIN: '1.97.0'
 
 jobs:
   macos:
@@ -26,32 +26,28 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install NSH and Node.js
+      - name: Install NSH and Rust
         shell: bash
         run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           mkdir -p .tools "$RUNNER_TEMP/desktop-tools"
           cd "$RUNNER_TEMP/desktop-tools"
-          nsh_archive=nsh-macos-arm64.tar.gz
-          node_archive="node-v${NODE_VERSION}-darwin-arm64.tar.gz"
-          curl -fsSL --retry 3 "https://github.com/longbridge/nsh/releases/download/v${NSH_VERSION}/$nsh_archive" -o "$nsh_archive"
-          curl -fsSL --retry 3 "https://nodejs.org/dist/v${NODE_VERSION}/$node_archive" -o "$node_archive"
+          archive=nsh-macos-arm64.tar.gz
+          curl -fsSL --retry 3 "https://github.com/longbridge/nsh/releases/download/v${NSH_VERSION}/$archive" -o "$archive"
           shasum -a 256 -c <<EOF
-          ee1aed2a4d111fe90e6cceca4b9d5f834c9e11cfda525f8be984261a329c06de  $nsh_archive
-          89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7  $node_archive
+          ee1aed2a4d111fe90e6cceca4b9d5f834c9e11cfda525f8be984261a329c06de  $archive
           EOF
-          tar -xzf "$nsh_archive" -C "$GITHUB_WORKSPACE/.tools"
-          tar -xzf "$node_archive"
-          printf '%s\n' "$PWD/node-v${NODE_VERSION}-darwin-arm64/bin" >> "$GITHUB_PATH"
+          tar -xzf "$archive" -C "$GITHUB_WORKSPACE/.tools"
 
       - name: Package macOS app
         shell: bash
         run: |
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
-            test "$GITHUB_REF_NAME" = "v$(node -p 'require("./nsh.json").version')"
+            version=$(python3 -c 'import json; print(json.load(open("nsh.json"))["version"])')
+            test "$GITHUB_REF_NAME" = "v$version"
           fi
           export NSH_RUNTIME="$PWD/.tools/nsh/runtime"
-          ./tools/package-macos
-          app=$(find .nsh/out -maxdepth 2 -type d -name '*.app')
+          app=$(./tools/package-macos | tail -n 1)
           test -d "$app"
           mkdir -p packages
           ditto -c -k --sequesterRsrc --keepParent "$app" packages/hg-drama-nsh-macos-arm64.zip
@@ -72,43 +68,31 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install NSH and Node.js
+      - name: Install NSH and Rust
         shell: pwsh
         run: |
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed' }
           New-Item -ItemType Directory -Force .tools, "$env:RUNNER_TEMP/desktop-tools" | Out-Null
           Set-Location "$env:RUNNER_TEMP/desktop-tools"
-          $nshArchive = 'nsh-windows-x86_64.zip'
-          $nodeArchive = "node-v$env:NODE_VERSION-win-x64.zip"
-          $archives = @{
-            $nshArchive = @{
-              Url = "https://github.com/longbridge/nsh/releases/download/v$env:NSH_VERSION/$nshArchive"
-              Hash = '7952c84b165e13515bd2ad2787ef22622e49ce88cb8d877825e40b40f3aff4be'
-            }
-            $nodeArchive = @{
-              Url = "https://nodejs.org/dist/v$env:NODE_VERSION/$nodeArchive"
-              Hash = 'd2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5'
-            }
+          $archive = 'nsh-windows-x86_64.zip'
+          curl.exe -fsSL --retry 3 "https://github.com/longbridge/nsh/releases/download/v$env:NSH_VERSION/$archive" -o $archive
+          if ($LASTEXITCODE -ne 0) { throw "Download failed: $archive" }
+          if ((Get-FileHash $archive).Hash -ne '7952c84b165e13515bd2ad2787ef22622e49ce88cb8d877825e40b40f3aff4be') {
+            throw "SHA-256 mismatch: $archive"
           }
-          foreach ($archive in $archives.Keys) {
-            curl.exe -fsSL --retry 3 $archives[$archive].Url -o $archive
-            if ($LASTEXITCODE -ne 0) { throw "Download failed: $archive" }
-            if ((Get-FileHash $archive).Hash -ne $archives[$archive].Hash) {
-              throw "SHA-256 mismatch: $archive"
-            }
-          }
-          Expand-Archive $nshArchive "$env:GITHUB_WORKSPACE/.tools"
-          Expand-Archive $nodeArchive .
+          Expand-Archive $archive "$env:GITHUB_WORKSPACE/.tools"
 
       - name: Package portable Windows app
-        shell: powershell
+        shell: pwsh
         run: |
-          $nodeExe = "$env:RUNNER_TEMP/desktop-tools/node-v$env:NODE_VERSION-win-x64/node.exe"
-          $env:NSH_RUNTIME = "$env:GITHUB_WORKSPACE/.tools/nsh/runtime"
-          ./tools/package-windows.ps1 -NodeExe $nodeExe
-          $zip = Get-ChildItem .nsh/out -Recurse -File -Filter 'hg-drama-nsh-windows-x64.zip'
-          if (@($zip).Count -ne 1) { throw 'Expected exactly one Windows ZIP' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = (Get-Content -Raw -Encoding UTF8 nsh.json | ConvertFrom-Json).version
+            if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag and app version differ' }
+          }
+          ./tools/package-windows.ps1 -OutputDir "$env:RUNNER_TEMP/hg-drama-windows"
           New-Item -ItemType Directory -Force packages | Out-Null
-          Copy-Item -LiteralPath $zip.FullName -Destination packages
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP/hg-drama-windows/hg-drama-nsh-windows-x64.zip" -Destination packages
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

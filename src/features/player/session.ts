@@ -113,7 +113,7 @@ export async function startPlayback(
   currentQuality = quality;
   currentDownloadId = undefined;
   if (!serviceConfig.baseUrl) {
-    state.set({ kind: "error", message: "请先运行 ./tools/dev 启动本机播放服务" });
+    state.set({ kind: "error", message: "本机播放服务未启动" });
     return;
   }
   const controller = new AbortController();
@@ -168,7 +168,7 @@ export async function startOfflinePlayback(downloadId: string, seriesId: string,
   currentEpisode = episodeId;
   currentDownloadId = downloadId;
   if (!serviceConfig.baseUrl) {
-    state.set({ kind: "error", message: "请先运行 ./tools/dev 启动本机播放服务" });
+    state.set({ kind: "error", message: "本机播放服务未启动" });
     return;
   }
   const controller = new AbortController();
