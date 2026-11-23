@@ -62,7 +62,7 @@ node --test service/*.test.cjs service/vendor/hongguo/*.test.cjs
 ./tools/package-macos
 ```
 
-脚本会使用固定版本 NSH 与同架构 Node.js 24+ 运行时打包生成 `/Applications/红果短剧-NSH.app`（使用本机临时签名）。若首次在其他 Mac 上打开提示“已损坏或无法验证”，可在终端执行：
+脚本使用固定版本 NSH 与同架构 Node.js 24+ 运行时，在 `.nsh/out/` 下生成临时签名的 `红果短剧-NSH.app`。拖入「应用程序」后，若首次在其他 Mac 上打开提示“已损坏或无法验证”，可在终端执行：
 
 ```bash
 xattr -cr /Applications/红果短剧-NSH.app

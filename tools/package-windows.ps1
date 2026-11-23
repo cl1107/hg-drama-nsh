@@ -178,8 +178,9 @@ static class Program {
 
   $zipOut = Join-Path $output 'hg-drama-nsh-windows-x64.zip'
   if (Test-Path $zipOut) { Remove-Item -Force $zipOut }
-  & tar.exe -a -cf $zipOut -C $appDir .
-  if ($LASTEXITCODE -ne 0) { throw 'Failed to create the portable ZIP' }
+  # Use .NET paths so the archive preserves the app's Chinese filename.
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::CreateFromDirectory($appDir, $zipOut)
 
   Write-Host "==> Portable Windows package ready!"
   Write-Host "Dir: $appDir"
