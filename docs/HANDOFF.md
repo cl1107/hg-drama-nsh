@@ -1,5 +1,12 @@
 # 开发交接
 
+## 2026-11-24 本机 v0.2.0 安装包 & Desktop packages CI
+
+- **本机安装**：构建号 13（`nsh.json` `0.2.0`）已通过 `./tools/package-macos` 打包并替换 `/Applications/红果短剧-NSH.app`。`codesign --verify --deep --strict` 通过；宿主为 `Contents/MacOS/NSH` arm64，无 Node 后端。
+- **CI 根因**：[run 45211811241](https://github.com/cl1107/hg-drama-nsh/actions/runs/45211811241) 的 macOS 任务因 GitHub 托管 arm64 runner 抢占失败被 cancelled（空 steps，注解 `not acquired by Runner of type hosted`），Windows 已成功；发布任务因此跳过。
+- **CI 修复**：[.github/workflows/release.yml](../.github/workflows/release.yml) 将 macOS 超时提到 45 分钟；打包步骤抽到 [.github/actions/package-macos](../.github/actions/package-macos/action.yml)；首次仍用 `macos-15`，失败后再用 `macos-latest` 走不同容量池；`publish` 在两次尝试任一成功且 Windows 成功时继续。
+- **下一步**：确认 v0.2.0 的 Desktop packages 重跑或带修复后的标签发布已产出 GitHub Release。
+
 ## 2026-11-23 方案 A 改造：Rust 稳定底座 + TSX 可 OTA 视频解析层
 
 - **分支留存**：原完整 Rust 后端工作区改动已完整备份在分支 `backup/rust-full-backend`（`35158f3`）；`master` 保持 clean（`v0.1.2`）；本次方案 A 改造在分支 `feat/tsx-resolver-ota` 上完成。

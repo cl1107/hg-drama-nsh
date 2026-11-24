@@ -17,47 +17,29 @@ env:
   RUSTUP_TOOLCHAIN: '1.97.0'
 
 jobs:
+  # GitHub 托管 macOS arm64 会因容量抢不到 runner，表现为 cancelled、空 steps、
+  # “not acquired by Runner of type hosted”。首次用 macos-15，失败后再走不同池的 macos-latest。
   macos:
     name: macOS arm64
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: ./.github/actions/package-macos
 
-      - name: Install NSH and Rust
-        shell: bash
-        run: |
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-          mkdir -p .tools "$RUNNER_TEMP/desktop-tools"
-          cd "$RUNNER_TEMP/desktop-tools"
-          archive=nsh-macos-arm64.tar.gz
-          curl -fsSL --retry 3 "https://github.com/longbridge/nsh/releases/download/v${NSH_VERSION}/$archive" -o "$archive"
-          shasum -a 256 -c <<EOF
-          ee1aed2a4d111fe90e6cceca4b9d5f834c9e11cfda525f8be984261a329c06de  $archive
-          EOF
-          tar -xzf "$archive" -C "$GITHUB_WORKSPACE/.tools"
-
-      - name: Package macOS app
-        shell: bash
-        run: |
-          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
-            version=$(python3 -c 'import json; print(json.load(open("nsh.json"))["version"])')
-            test "$GITHUB_REF_NAME" = "v$version"
-          fi
-          export NSH_RUNTIME="$PWD/.tools/nsh/runtime"
-          app=$(./tools/package-macos | tail -n 1)
-          test -d "$app"
-          mkdir -p packages
-          ditto -c -k --sequesterRsrc --keepParent "$app" packages/hg-drama-nsh-macos-arm64.zip
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+  macos-retry:
+    name: macOS arm64 (retry)
+    needs: macos
+    if: always() && needs.macos.result != 'success'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: macos-arm64
-          path: packages/hg-drama-nsh-macos-arm64.zip
-          if-no-files-found: error
-          compression-level: 0
+          persist-credentials: false
+      - uses: ./.github/actions/package-macos
 
   windows:
     name: Windows x64
@@ -103,8 +85,13 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [macos, windows]
+    needs: [macos, macos-retry, windows]
+    if: >
+      always() &&
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      needs.windows.result == 'success' &&
+      (needs.macos.result == 'success' || needs.macos-retry.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
