@@ -1,5 +1,24 @@
 # 开发交接
 
+## 2026-11-24 安装 unslop Skill、左侧菜单栏精修、播放修复与运行时自动探测自愈（OTA 构建号 14）
+
+1. **安装 unslop Skill**：从 `heydamir/unslop` 安装至项目 [.agents/skills/unslop/](../.agents/skills/unslop/)（保留 CC BY 4.0 许可与作者署名）。
+2. **左侧菜单栏 UI 优化**（[App.tsx](../App.tsx)、[src/ui/controls.tsx](../src/ui/controls.tsx)）：
+   - 按 unslop 红线审计与 4px 栅格重写侧栏：外层补充对称水平内边距（展开 `220px` + `px-3`，收起 `64px` + `px-2.5`），彻底消除悬停/选中胶囊贴壁与撞边问题。
+   - 导航行统一 `h-9`（36px）、`16px` 线框图标置于统一 `18×18` 对齐槽、组内 `gap-0.5`（2px），第二分组「我的」上间距 `pt-5`（20px）明显大于组内间距；收起态在两组间加水平细分割线。
+   - 顶部增加极简品牌行（8px 莓红圆点 + `红果短剧`）并与收起按钮左右对齐；选中态改为柔和选区底 + 左侧 `3×16px` 圆角莓红焦点指示条（Signature 细节）；底部由 `border-t border-border/60` 分隔，「设置」占满 `flex-1` 与 `36×36` 主题按钮齐平，账号行补充单行省略保护。
+   - 通过 `nsh test --target macos` 实机截屏验收深色展开态、深色折叠态与浅色展开态。
+3. **播放故障根因修复 & 运行时自动探测自愈引擎**（[src/providers/source-resolver/v5.ts](../src/providers/source-resolver/v5.ts)、[src/providers/source-resolver/index.ts](../src/providers/source-resolver/index.ts)、[src/features/settings/SettingsView.tsx](../src/features/settings/SettingsView.tsx)）：
+   - **根因**：2026-11-24 上游对 `multi_video_model/preload/v1`、`multi_video_model/player/v1` 与 `video_tab/multi_video_model/v1/` 全部返回 HTTP 200 空包（`content-length: 0`），而同 `field21=312` 签名下的单集端点 `POST /novel/player/video_model/v1/`（`content_type: 1004, video_id`）全节点正常返回 1080p HEVC + `spade_a`。
+   - **运行时自适应探测与持久化自愈**：
+     - 将策略抽象为 `PlaybackStrategy`（`mode × host × profile × field21`），支持 `video_model/v1/`、`preload/v1`、`video_tab/v1`、`player/v1` 与旧 `v1/`，以及多客户端画像（`modern_745`、`compat_743`、`cronet_739`）、`field21 ∈ {312, 377}` 与多主机池。
+     - `raceStrategies()` 在竞速内直接完成模型解析与 `fallback_api` 编码协商，仅在拿到有效片源后才判胜；Tier 1 优先复用持久化到 `Storage`（`hg:resolver:strategy:v1`）的健康线路，失败时自动触发 Tier 2/3 有界探测（跨端点 → 跨主机 → 跨画像/`field21` → 换匿名设备重注册 → Legacy `v1/`），命中后自动持久化固化，无需改代码即可扛住上游单端点/单节点/已知参数轮换。
+     - `SettingsView.tsx` 展示当前自适应解析线路、自愈次数与「重置线路探测」按钮。
+4. **验证与 OTA 发布**：
+   - 沙箱 `nsh check`（0 错误）、`nsh build`（`302.6 KB js, 1.2 MB bytecode`）、`App.test.tsx` **13/13**、`session.test.tsx` **1/1**、`feed.test.tsx` **4/4**、`resolver.test.tsx` **7/7** 全部通过。
+   - 真实在线端到端实测：新 TSX `resolveEpisodeVariants` 3 部线上剧集（《宴律》454ms、《谁让这个文盲修仙的第七季》177ms、《和离后我带女儿横扫魔域第三季完结篇》174ms）全取源成功并完成《宴律》22.4 MB 完整 CENC 解密（`ftyp`）；模拟主节点返回空包时 2.3s 内自动探测切换至 `api5-normal-sinfonlineb` 并持久化。
+   - 递增 `nsh.json` `build: 14`，推送 `ota-14` 标签触发 `.github/workflows/ota.yml` 发布签名 `.nshpkg` 热更新包。
+
 ## 2026-11-24 本机 v0.2.0 安装包 & Desktop packages CI
 
 - **本机安装**：构建号 13（`nsh.json` `0.2.0`）已通过 `./tools/package-macos` 打包并替换 `/Applications/红果短剧-NSH.app`。`codesign --verify --deep --strict` 通过；宿主为 `Contents/MacOS/NSH` arm64，无 Node 后端。

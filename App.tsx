@@ -60,21 +60,93 @@ function App() {
   const hasOwnHeading = () => ["推荐", "找剧", "排行榜", "新剧", "上新日历", "登录", "剧集主页"].includes(page());
   return <View class="flex-1 flex-row bg-background">
     <If when={!isVideoFullscreen()}>
-      <View style={{ width: collapsed() ? 64 : 208 }} class="bg-sidebar border-r border-border gap-1 pb-3">
+      <View
+        style={{ width: collapsed() ? 64 : 220 }}
+        class={`bg-sidebar border-r border-border pb-3 ${collapsed() ? "px-2.5" : "px-3"}`}
+      >
         <View desktop={{ windowDrag: true }} class="h-9 shrink-0" />
-        <View class="pb-1">
-          <SidebarIconButton icon={collapsed() ? "chevron-right" : "chevron-left"} label={collapsed() ? "展开侧栏" : "收起侧栏"} testID="sidebar-toggle" onPress={() => updatePreferences({ sidebarCollapsed: !collapsed() })} />
+        <View class={collapsed() ? "mb-2" : "h-9 flex-row items-center justify-between pl-2.5 mb-2"}>
+          <If when={!collapsed()}>
+            <View class="flex-row items-center gap-2.5">
+              <View class="items-center justify-center" style={{ width: 18, height: 18 }}>
+                <View class="rounded-full bg-primary" style={{ width: 8, height: 8 }} />
+              </View>
+              <Text class="text-sm font-medium text-foreground">红果短剧</Text>
+            </View>
+          </If>
+          <SidebarIconButton
+            icon={collapsed() ? "chevron-right" : "chevron-left"}
+            label={collapsed() ? "展开侧栏" : "收起侧栏"}
+            testID="sidebar-toggle"
+            collapsed={collapsed()}
+            onPress={() => updatePreferences({ sidebarCollapsed: !collapsed() })}
+          />
         </View>
-        <If when={!collapsed()}><Text class="text-muted-foreground text-xs pl-3 pr-2 pt-2 pb-2">发现</Text></If>
-        <Each of={DISCOVER_NAV}>{item => <SidebarItem label={item().key} shortLabel={item().key.slice(0,1)} icon={item().icon} collapsed={collapsed()} selected={page() === item().key || item().key === "新剧" && page() === "上新日历"} onPress={() => navigate(item().key)} />}</Each>
-        <If when={!collapsed()}><Text class="text-muted-foreground text-xs pl-3 pr-2 pt-4 pb-2">我的</Text></If>
-        <Each of={MINE_NAV}>{item => <SidebarItem label={item().key} shortLabel={item().key.slice(0,1)} icon={item().icon} collapsed={collapsed()} selected={page() === item().key} onPress={() => navigate(item().key)} />}</Each>
+        <View class="gap-0.5">
+          <If when={!collapsed()}>
+            <Text class="text-xs font-medium text-muted-foreground opacity-65 px-2.5 pt-2 pb-1.5">发现</Text>
+          </If>
+          <Each of={DISCOVER_NAV}>
+            {item => (
+              <SidebarItem
+                label={item().key}
+                shortLabel={item().key.slice(0, 1)}
+                icon={item().icon}
+                collapsed={collapsed()}
+                selected={page() === item().key || (item().key === "新剧" && page() === "上新日历")}
+                onPress={() => navigate(item().key)}
+              />
+            )}
+          </Each>
+        </View>
+        <If when={collapsed()}>
+          <View class="mx-2 my-2 bg-border opacity-60" style={{ height: 1 }} />
+        </If>
+        <View class="gap-0.5">
+          <If when={!collapsed()}>
+            <Text class="text-xs font-medium text-muted-foreground opacity-65 px-2.5 pt-5 pb-1.5">我的</Text>
+          </If>
+          <Each of={MINE_NAV}>
+            {item => (
+              <SidebarItem
+                label={item().key}
+                shortLabel={item().key.slice(0, 1)}
+                icon={item().icon}
+                collapsed={collapsed()}
+                selected={page() === item().key}
+                onPress={() => navigate(item().key)}
+              />
+            )}
+          </Each>
+        </View>
         <View class="flex-1" />
-        <View class={collapsed() ? "gap-1 mb-2" : "flex-row items-center justify-between mb-2"}>
-          <SidebarItem label="设置" shortLabel="设" icon="settings" collapsed={collapsed()} selected={page() === "设置"} onPress={() => navigate("设置")} />
-          <SidebarIconButton icon={colorScheme() === "dark" ? "sun" : "moon"} label={colorScheme() === "dark" ? "切换到浅色模式" : "切换到深色模式"} onPress={() => updatePreferences({ colorScheme: colorScheme() === "dark" ? "light" : "dark" })} />
+        <View class="border-t border-border/60 pt-2.5 mt-2 gap-1">
+          <View class={collapsed() ? "gap-1" : "flex-row items-center gap-1.5"}>
+            <SidebarItem
+              label="设置"
+              shortLabel="设"
+              icon="settings"
+              collapsed={collapsed()}
+              selected={page() === "设置"}
+              class={collapsed() ? undefined : "flex-1"}
+              onPress={() => navigate("设置")}
+            />
+            <SidebarIconButton
+              icon={colorScheme() === "dark" ? "sun" : "moon"}
+              label={colorScheme() === "dark" ? "切换到浅色模式" : "切换到深色模式"}
+              collapsed={collapsed()}
+              onPress={() => updatePreferences({ colorScheme: colorScheme() === "dark" ? "light" : "dark" })}
+            />
+          </View>
+          <SidebarItem
+            label={currentAccount()?.nickname ?? "我的 / 登录"}
+            shortLabel="我"
+            icon="user"
+            collapsed={collapsed()}
+            selected={page() === "登录"}
+            onPress={() => navigate("登录")}
+          />
         </View>
-        <SidebarItem label={currentAccount()?.nickname ?? "我的 / 登录"} shortLabel="我" icon="user" collapsed={collapsed()} selected={page() === "登录"} onPress={() => navigate("登录")} />
       </View>
     </If>
     <View class="flex-1 relative">

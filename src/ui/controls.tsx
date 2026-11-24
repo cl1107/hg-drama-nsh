@@ -56,33 +56,79 @@ export function Button(props: {
 }
 
 export function SidebarItem(props: {
-  label: string; shortLabel: string; collapsed: boolean; selected: boolean; onPress: () => void; testID?: string; icon?: IconName;
-}) {
- // 收起态：图标与收起按钮同轴（px-3）；展开态：子项相对分组标签再右缩一级（pl-5）。
- const pad = () => (props.collapsed ? "px-3" : "pl-5 pr-3");
- return <BaseButton testID={props.testID} accessibilityLabel={props.label} tooltip={props.collapsed ? props.label : undefined} selected={props.selected} onPress={props.onPress}
-  class={`${pad()} rounded-lg h-10 flex-row items-center gap-3 ${props.selected ? "bg-selection focus:border-ring" : "hover:bg-muted active:opacity-70 focus:border-ring"}`}>
-  <Icon name={props.icon ?? "compass"} color={props.selected ? "primary" : "muted-foreground"} size={18} />
-  <If when={!props.collapsed}><Text class={props.selected ? "text-sm font-medium text-primary" : "text-sm text-muted-foreground"}>{props.label}</Text></If>
- </BaseButton>;
-}
-
-// 与 SidebarItem 同参（px-3、h-10、18px 图标），保证侧栏图标列垂直中线一致。
-export function SidebarIconButton(props: {
-  icon: IconName;
   label: string;
+  shortLabel: string;
+  collapsed: boolean;
+  selected: boolean;
   onPress: () => void;
   testID?: string;
+  icon?: IconName;
+  class?: string;
 }) {
   return (
     <BaseButton
       testID={props.testID}
       accessibilityLabel={props.label}
-      tooltip={props.label}
+      tooltip={props.collapsed ? textTooltip(props.label) : undefined}
+      selected={props.selected}
       onPress={props.onPress}
-      class="h-10 flex-row items-center self-start rounded-lg px-3 hover:bg-muted active:opacity-70 focus:border-ring"
+      class={`relative h-9 rounded-lg flex-row items-center focus:border-ring ${
+        props.collapsed ? "w-full justify-center px-0" : "px-2.5 gap-2.5"
+      } ${
+        props.selected
+          ? "bg-selection"
+          : "hover:bg-muted/60 active:opacity-75"
+      } ${props.class ?? ""}`}
     >
-      <Icon name={props.icon} color="muted-foreground" size={18} />
+      <If when={props.selected && !props.collapsed}>
+        <View
+          class="absolute left-0 rounded-full bg-primary"
+          style={{ width: 3, height: 16 }}
+        />
+      </If>
+      <View class="items-center justify-center" style={{ width: 18, height: 18 }}>
+        <Icon
+          name={props.icon ?? "compass"}
+          color={props.selected ? "primary" : "muted-foreground"}
+          size={16}
+        />
+      </View>
+      <If when={!props.collapsed}>
+        <Text
+          class={`flex-1 text-sm ${
+            props.selected
+              ? "font-medium text-primary"
+              : "text-foreground opacity-80"
+          }`}
+          style={{ numberOfLines: 1 }}
+        >
+          {props.label}
+        </Text>
+      </If>
+    </BaseButton>
+  );
+}
+
+// 与 SidebarItem 统一 36px 高度与 16px 图标规格，保证展开/收起态视觉基线严格对齐。
+export function SidebarIconButton(props: {
+  icon: IconName;
+  label: string;
+  onPress: () => void;
+  testID?: string;
+  collapsed?: boolean;
+  class?: string;
+}) {
+  return (
+    <BaseButton
+      testID={props.testID}
+      accessibilityLabel={props.label}
+      tooltip={textTooltip(props.label)}
+      onPress={props.onPress}
+      class={`h-9 items-center justify-center rounded-lg hover:bg-muted/60 active:opacity-75 focus:border-ring ${
+        props.collapsed ? "w-full" : "w-9"
+      } ${props.class ?? ""}`}
+    >
+      <Icon name={props.icon} color="muted-foreground" size={16} />
     </BaseButton>
   );
 }

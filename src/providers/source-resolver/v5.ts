@@ -267,8 +267,9 @@ function xmxor(data: Buffer, key: Buffer): Buffer {
   return encoded;
 }
 
-function medusa(query: Buffer, f13: Buffer, ts: number, who: Record<string, string>): string {
+function medusa(query: Buffer, f13: Buffer, ts: number, who: Record<string, string>, field21 = 312): string {
   const flags = Buffer.alloc(8);
+  const brand = who.device_brand || "HONOR";
   const device = proto([
     [1, 1, "sint"],
     [2, 2, "sint"],
@@ -281,9 +282,9 @@ function medusa(query: Buffer, f13: Buffer, ts: number, who: Record<string, stri
     [22, who.os_version],
     [25, PROCESS_STARTED, "sint"],
     [30, who.device_type],
-    [31, "HONOR"],
+    [31, brand],
     [32, who.device_type],
-    [34, "HONOR"],
+    [34, brand],
   ]);
   const env = proto([
     [6, "v04.10.03.04-bugfix"],
@@ -316,7 +317,7 @@ function medusa(query: Buffer, f13: Buffer, ts: number, who: Record<string, stri
     ],
     [17, ts, "sint"],
     [20, "none"],
-    [21, 312, "sint"],
+    [21, field21, "sint"],
     [23, env],
     [24, '{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}'],
   ]);
@@ -399,8 +400,12 @@ export function signPlaybackV5(input: {
   body: Buffer | null;
   now?: number;
   allowEmptyBody?: boolean;
+  field21?: number;
 }): { url: string; headers: Record<string, string> } {
-  const { base, values, body, now = Date.now(), allowEmptyBody = false } = input;
+  const { base, values, body, now = Date.now(), allowEmptyBody = false, field21 = 312 } = input;
+  if (!Number.isInteger(field21) || field21 < 0 || field21 > 0xffff) {
+    throw new RangeError("V5 field21 must be an unsigned 16-bit integer");
+  }
   const parsed = new URL(base);
   const who: Record<string, string> = { ...values };
   const hasBody = !(allowEmptyBody && body === null);
@@ -426,7 +431,7 @@ export function signPlaybackV5(input: {
       headers: {
         "x-khronos": String(ts),
         "x-helios": helios(ts),
-        "x-medusa": medusa(queryHash, f13, ts, who),
+        "x-medusa": medusa(queryHash, f13, ts, who, field21),
         ...(hasBody ? { "x-ss-stub": bodyHash.toString("hex").toUpperCase(), "x-ss-req-ticket": ticket } : {}),
       },
     };

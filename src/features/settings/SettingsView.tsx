@@ -17,6 +17,11 @@ import {
   type QualityOption,
 } from "../../stores/user-data";
 import { servicePost } from "../../service-client";
+import {
+  formatStrategyLabel,
+  resetResolverStrategy,
+  resolverDiagnostics,
+} from "../../providers/source-resolver";
 
 const QUALITIES: { value: QualityOption; label: string }[] = [
   { value: "auto", label: "自动" },
@@ -180,7 +185,26 @@ export function SettingsView(props: { onNotify?: (msg: string) => void }) {
       </View>
 
       <View class="bg-card border border-border rounded-xl p-4 gap-3">
-        <Text class="text-base font-semibold text-foreground">解析包热更新（OTA）</Text>
+        <Text class="text-base font-semibold text-foreground">解析线路与热更新（OTA）</Text>
+        <View class="flex-row items-center justify-between gap-2 flex-wrap">
+          <View class="gap-1">
+            <Text class="text-sm text-muted-foreground">
+              {`当前自适应解析线路：${formatStrategyLabel(resolverDiagnostics().activeStrategy)}${resolverDiagnostics().healCount > 0 ? `（已自动修复 ${resolverDiagnostics().healCount} 次）` : ""}`}
+            </Text>
+            <If when={Boolean(resolverDiagnostics().lastError)}>
+              <Text class="text-xs text-muted-foreground">{`最近解析状态：${resolverDiagnostics().lastError}`}</Text>
+            </If>
+          </View>
+          <Button
+            label="重置线路探测"
+            variant="ghost"
+            size="sm"
+            onPress={() => {
+              resetResolverStrategy(true);
+              props.onNotify?.("已重置解析线路与匿名设备，下次播放自动重新探测");
+            }}
+          />
+        </View>
         <View class="flex-row items-center justify-between gap-2 flex-wrap">
           <View class="gap-1">
             <Text class="text-sm text-muted-foreground">

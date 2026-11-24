@@ -7,11 +7,12 @@ import { sm3 } from "./sm3";
 import { signPlayer } from "./signature";
 import { signPlaybackV5 } from "./v5";
 import {
-  clearCachedDevice,
   decryptSpadeUrl,
   deriveContentKeyHex,
   parsePlayModelVariants,
+  resetResolverStrategy,
   resolveEpisodeVariants,
+  resolverDiagnostics,
   type UpstreamTransport,
 } from "./index";
 
@@ -74,7 +75,7 @@ test("signPlayer and signPlaybackV5 produce valid signature headers", () => {
 });
 
 test("resolveEpisodeVariants registers device, races routes, and parses clear variants", async () => {
-  clearCachedDevice();
+  resetResolverStrategy(true);
   const seenUrls: string[] = [];
   const transport: UpstreamTransport = async (req) => {
     seenUrls.push(req.url);
@@ -122,10 +123,62 @@ test("resolveEpisodeVariants registers device, races routes, and parses clear va
   expect(variants[0].quality).toBe("1080p");
   expect(variants[0].url).toBe("https://v1.fqnovelvod.com/clear-1080p.mp4");
   expect(seenUrls.some((u) => u.includes("device_register"))).toBe(true);
+  expect(resolverDiagnostics().activeStrategy.mode).toBe("tab");
+  expect(resolverDiagnostics().healCount).toBeGreaterThan(0);
+});
+
+test("resolveEpisodeVariants supports single-episode video_model/v1/ and remembers active strategy", async () => {
+  resetResolverStrategy(true);
+  const seenUrls: string[] = [];
+  const transport: UpstreamTransport = async (req) => {
+    seenUrls.push(req.url);
+    if (req.url.includes("device_register")) {
+      return {
+        status: 200,
+        headers: {},
+        body: Buffer.from(JSON.stringify({ device_id_str: "123456789012", install_id_str: "987654321098" })),
+      };
+    }
+    if (req.url.includes("/novel/player/video_model/v1/") && req.url.includes("api5-normal-sinfonlineb")) {
+      return {
+        status: 200,
+        headers: {},
+        body: Buffer.from(
+          JSON.stringify({
+            code: 0,
+            data: {
+              video_model: JSON.stringify({
+                video_list: [
+                  {
+                    video_meta: { codec_type: "bytevc1", definition: "1080p", vwidth: 1080, vheight: 1920 },
+                    encrypt_info: { encrypt: false },
+                    main_url: Buffer.from("https://v1.fqnovelvod.com/single-1080p.mp4", "utf8").toString("base64"),
+                  },
+                ],
+              }),
+            },
+          }),
+        ),
+      };
+    }
+    return { status: 200, headers: {}, body: Buffer.alloc(0) };
+  };
+
+  const first = await resolveEpisodeVariants("7503780574541122622", "auto", { transport });
+  expect(first.length).toBe(1);
+  expect(first[0].codec).toBe("hevc");
+  expect(first[0].url).toBe("https://v1.fqnovelvod.com/single-1080p.mp4");
+  expect(resolverDiagnostics().activeStrategy.host).toBe("api5-normal-sinfonlineb.fqnovel.com");
+
+  const callsBeforeSecond = seenUrls.length;
+  const second = await resolveEpisodeVariants("7503780574541122622", "auto", { transport });
+  expect(second[0].url).toBe("https://v1.fqnovelvod.com/single-1080p.mp4");
+  // Second call should hit remembered strategy immediately in the fast wave (<=2 requests).
+  expect(seenUrls.length - callsBeforeSecond).toBeLessThanOrEqual(2);
 });
 
 test("resolveEpisodeVariants prefers preload/v1 and negotiates fallback_api on bytevc2-only models", async () => {
-  clearCachedDevice();
+  resetResolverStrategy(true);
   const seenUrls: string[] = [];
   const transport: UpstreamTransport = async (req) => {
     seenUrls.push(req.url);
