@@ -5,7 +5,8 @@
 - **本机安装**：构建号 13（`nsh.json` `0.2.0`）已通过 `./tools/package-macos` 打包并替换 `/Applications/红果短剧-NSH.app`。`codesign --verify --deep --strict` 通过；宿主为 `Contents/MacOS/NSH` arm64，无 Node 后端。
 - **CI 根因**：[run 45211811241](https://github.com/cl1107/hg-drama-nsh/actions/runs/45211811241) 的 macOS 任务因 GitHub 托管 arm64 runner 抢占失败被 cancelled（空 steps，注解 `not acquired by Runner of type hosted`），Windows 已成功；发布任务因此跳过。
 - **CI 修复**：[.github/workflows/release.yml](../.github/workflows/release.yml) 将 macOS 超时提到 45 分钟；打包步骤抽到 [.github/actions/package-macos](../.github/actions/package-macos/action.yml)；首次仍用 `macos-15`，失败后再用 `macos-latest` 走不同容量池；`publish` 在两次尝试任一成功且 Windows 成功时继续。
-- **下一步**：确认 v0.2.0 的 Desktop packages 重跑或带修复后的标签发布已产出 GitHub Release。
+- **发布结果**：重跑 [run 45211811241](https://github.com/cl1107/hg-drama-nsh/actions/runs/45211811241) 已成功，macOS / Windows / Publish 均通过，[GitHub Release v0.2.0](https://github.com/cl1107/hg-drama-nsh/releases/tag/v0.2.0) 已挂上两份 ZIP 与校验文件。master 上的换池重试用于后续标签。
+- **下一步**：实机打开 `/Applications/红果短剧-NSH.app` 验收在线播放与 OTA 入口。
 
 ## 2026-11-23 方案 A 改造：Rust 稳定底座 + TSX 可 OTA 视频解析层
 
