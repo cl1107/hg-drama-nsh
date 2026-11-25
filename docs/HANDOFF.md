@@ -1,5 +1,16 @@
 # 开发交接
 
+## 2026-11-24 启动自动检查 OTA 热更新与更新提示卡片（OTA 构建号 15）
+
+1. **共享 OTA 状态模块**（[src/stores/ota.ts](../src/stores/ota.ts)）：
+   - 抽离 `nsh/updater` 状态与操作（`checkOtaUpdate`、`applyOtaUpdate`、`dismissOtaPrompt`、`availableOta`、`otaBusy`、`otaStatus`、`otaError`、`otaDownloaded`、`otaPromptDismissed`），[SettingsView.tsx](../src/features/settings/SettingsView.tsx) 与 [App.tsx](../App.tsx) 共用同一份状态避免重复请求。
+   - `checkOtaUpdate({ silent: true })` 仅在 `shellInfo().packages === true`（已打包支持 OTA 环境）下发起静默检查，网络异常静默降级不打扰用户；检测到新包自动展示提示。
+2. **启动自动检查与右下角悬浮更新卡片**（[App.tsx](../App.tsx)）：
+   - 应用启动时异步执行 `checkOtaUpdate({ silent: true })`；若发现新热更新包且未处于全屏播放态，在右下角展示 `ota-update-banner` 卡片（版本号、构建号、更新说明/下载进度或错误提示），支持「立即更新」（下载校验并自动重启）与「稍后」（关闭卡片，设置页仍保留一键更新入口）。
+3. **验证与 OTA 发布**：
+   - `nsh check`（0 错误）、`nsh build`（`300.3 KB js, 1.2 MB bytecode`）、`App.test.tsx` **15/15**（含 2 条启动自动检查 OTA 回归测试）全部通过。
+   - 递增 `nsh.json` `build: 15`，推送 `ota-15` 标签触发 `.github/workflows/ota.yml` 发布签名 `.nshpkg` 热更新包。
+
 ## 2026-11-24 安装 unslop Skill、左侧菜单栏精修、播放修复与运行时自动探测自愈（OTA 构建号 14）
 
 1. **安装 unslop Skill**：从 `heydamir/unslop` 安装至项目 [.agents/skills/unslop/](../.agents/skills/unslop/)（保留 CC BY 4.0 许可与作者署名）。

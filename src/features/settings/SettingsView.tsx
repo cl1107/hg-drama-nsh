@@ -1,12 +1,4 @@
-import { View, Text, Scroll, colorScheme, signal } from "nsh";
-import {
-  checkForPackage,
-  downloadPackage,
-  restartToPackage,
-  runningPackage,
-  shellInfo,
-  type PackageUpdate,
-} from "nsh/updater";
+import { View, Text, Scroll, colorScheme } from "nsh";
 import { Button, FilterChip } from "../../ui/controls";
 import {
   preferences,
@@ -16,6 +8,16 @@ import {
   watchHistory,
   type QualityOption,
 } from "../../stores/user-data";
+import {
+  applyOtaUpdate,
+  availableOta,
+  checkOtaUpdate,
+  otaBusy,
+  otaDownloaded,
+  otaRunningPackage,
+  otaShellInfo,
+  otaStatus,
+} from "../../stores/ota";
 import { servicePost } from "../../service-client";
 import {
   formatStrategyLabel,
@@ -32,52 +34,8 @@ const QUALITIES: { value: QualityOption; label: string }[] = [
 ];
 
 export function SettingsView(props: { onNotify?: (msg: string) => void }) {
-  const shell = shellInfo();
-  const activePkg = runningPackage();
-  const otaBusy = signal(false);
-  const otaStatus = signal<string>("");
-  const availablePkg = signal<PackageUpdate | null>(null);
-  const downloadedPkg = signal(false);
-
-  const checkOta = async () => {
-    if (otaBusy()) return;
-    otaBusy.set(true);
-    otaStatus.set("正在检查解析包更新…");
-    downloadedPkg.set(false);
-    try {
-      const update = await checkForPackage();
-      availablePkg.set(update);
-      if (update) {
-        otaStatus.set(`发现新解析包 v${update.version}（构建 ${update.build}）`);
-      } else {
-        otaStatus.set(shell.packages ? "当前已是最新解析包" : "当前为开发运行或未配置 OTA 源");
-      }
-    } catch (e) {
-      otaStatus.set(e instanceof Error ? `检查失败：${e.message}` : "检查热更新失败");
-    } finally {
-      otaBusy.set(false);
-    }
-  };
-
-  const applyOta = async () => {
-    if (otaBusy() || !availablePkg()) return;
-    otaBusy.set(true);
-    otaStatus.set("正在下载并校验签名包…");
-    try {
-      await downloadPackage((p) => {
-        if (p.total && p.total > 0) {
-          otaStatus.set(`正在下载解析包 ${Math.round((p.received / p.total) * 100)}%…`);
-        }
-      });
-      downloadedPkg.set(true);
-      otaStatus.set("签名校验通过，正在重启加载新解析包…");
-      await restartToPackage();
-    } catch (e) {
-      otaStatus.set(e instanceof Error ? `更新失败：${e.message}` : "热更新失败");
-    } finally {
-      otaBusy.set(false);
-    }
-  };
+  const shell = otaShellInfo();
+  const activePkg = otaRunningPackage();
 
   const clearAllDownloads = async () => {
     try {
@@ -222,15 +180,15 @@ export function SettingsView(props: { onNotify?: (msg: string) => void }) {
               variant="outline"
               size="sm"
               disabled={otaBusy()}
-              onPress={() => void checkOta()}
+              onPress={() => void checkOtaUpdate({ silent: false })}
             />
-            <If when={Boolean(availablePkg()) && !downloadedPkg()}>
+            <If when={Boolean(availableOta()) && !otaDownloaded()}>
               <Button
                 label="下载并重启"
                 variant="primary"
                 size="sm"
                 disabled={otaBusy()}
-                onPress={() => void applyOta()}
+                onPress={() => void applyOtaUpdate()}
               />
             </If>
           </View>

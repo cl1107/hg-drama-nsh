@@ -1,5 +1,5 @@
 import { mount, signal, Text, View, cleanup, colorScheme } from "nsh";
-import { PageHeader, SidebarIconButton, SidebarItem } from "./src/ui/controls";
+import { Button, PageHeader, SidebarIconButton, SidebarItem } from "./src/ui/controls";
 import { type IconName } from "./src/ui/icons";
 import { cancelCatalog } from "./src/catalog-store";
 import { Player } from "./src/features/player/Player";
@@ -14,6 +14,17 @@ import { DownloadsView } from "./src/features/downloads/DownloadsView";
 import { currentAccount, LoginView, refreshAccountStatus } from "./src/features/auth/LoginView";
 import { SettingsView } from "./src/features/settings/SettingsView";
 import { getSavedProgress, loadUserData, preferences, updatePreferences } from "./src/stores/user-data";
+import {
+  applyOtaUpdate,
+  availableOta,
+  checkOtaUpdate,
+  dismissOtaPrompt,
+  otaBusy,
+  otaDownloaded,
+  otaError,
+  otaPromptDismissed,
+  otaStatus,
+} from "./src/stores/ota";
 
 const DISCOVER_NAV: { key: string; icon: IconName }[] = [
   { key: "推荐", icon: "compass" }, { key: "找剧", icon: "search" },
@@ -29,6 +40,7 @@ function App() {
   const toast = signal("");
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   void loadUserData("guest").then(() => refreshAccountStatus());
+  void checkOtaUpdate({ silent: true });
   const notify = (message: string) => {
     toast.set(message);
     if (toastTimer) clearTimeout(toastTimer);
@@ -169,6 +181,42 @@ function App() {
         </View>
       </If>
       <If when={!!toast()}><View class="absolute bottom-20 self-center rounded-lg bg-card border border-border px-4 py-3"><Text class="text-sm text-foreground">{toast()}</Text></View></If>
+      <If when={!isVideoFullscreen() && Boolean(availableOta()) && !otaPromptDismissed()}>
+        <View
+          testID="ota-update-banner"
+          class="absolute right-6 bottom-6 rounded-xl bg-card border border-border p-4 gap-3"
+          style={{ width: 320 }}
+        >
+          <View class="gap-1">
+            <Text class="text-sm font-medium text-foreground">
+              {`发现新热更新包 v${availableOta()?.version ?? ""}（构建 ${availableOta()?.build ?? ""}）`}
+            </Text>
+            <Text class={otaError() ? "text-xs text-destructive" : "text-xs text-muted-foreground"} style={{ numberOfLines: 2 }}>
+              {otaError() || otaBusy() || otaDownloaded()
+                ? otaStatus()
+                : (availableOta()?.notes?.trim() || "无需重装应用，更新完成后自动重启生效")}
+            </Text>
+          </View>
+          <View class="flex-row items-center justify-end gap-2">
+            <Button
+              testID="ota-banner-dismiss"
+              label="稍后"
+              variant="ghost"
+              size="sm"
+              disabled={otaBusy()}
+              onPress={() => dismissOtaPrompt()}
+            />
+            <Button
+              testID="ota-banner-apply"
+              label={otaBusy() ? "更新中…" : "立即更新"}
+              variant="primary"
+              size="sm"
+              disabled={otaBusy() || otaDownloaded()}
+              onPress={() => void applyOtaUpdate()}
+            />
+          </View>
+        </View>
+      </If>
     </View>
   </View>;
 }

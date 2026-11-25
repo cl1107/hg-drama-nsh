@@ -379,3 +379,76 @@ test("player fetches and renders danmaku, toggles visibility, and updates danmak
   await app.press("id:settings-danmaku-block-back");
   await app.waitFor("已设 1 个");
 });
+
+test("startup auto-checks OTA package, shows prompt banner, and supports dismiss or immediate update", async () => {
+  let checkCalls = 0;
+  let downloadCalls = 0;
+  let restartCalls = 0;
+  const app = await open("./App.tsx", {
+    platform: "macos",
+    width: 1480,
+    height: 820,
+    network: routes,
+    modules: {
+      "nsh/updater": {
+        shellInfo: { version: "0.2.0", build: 14, nshVersion: "0.6.1", packages: true },
+        runningPackage: null,
+        checkForPackage: () => {
+          checkCalls += 1;
+          return { version: "0.2.0", build: 15, notes: "修复播放线路与启动自动检查热更新" };
+        },
+        downloadPackage: () => {
+          downloadCalls += 1;
+        },
+        restartToPackage: () => {
+          restartCalls += 1;
+        },
+      },
+    },
+  });
+
+  await app.waitFor("id:ota-update-banner");
+  expect(checkCalls).toBe(1);
+  expect(app.texts()).toContain("发现新热更新包 v0.2.0（构建 15）");
+  expect(app.texts()).toContain("修复播放线路与启动自动检查热更新");
+
+  // Dismiss banner, verify settings still retains the discovered update
+  await app.press("id:ota-banner-dismiss");
+  await app.waitFor("id:ota-update-banner", { state: "gone" });
+  await app.press("设置");
+  await app.waitFor("下载并重启");
+  await app.press("下载并重启");
+  await app.waitUntil(() => restartCalls === 1);
+  expect(downloadCalls).toBe(1);
+  expect(restartCalls).toBe(1);
+});
+
+test("startup OTA banner allows immediate update directly from main screen", async () => {
+  let downloadCalls = 0;
+  let restartCalls = 0;
+  const app = await open("./App.tsx", {
+    platform: "macos",
+    width: 1480,
+    height: 820,
+    network: routes,
+    modules: {
+      "nsh/updater": {
+        shellInfo: { version: "0.2.0", build: 14, nshVersion: "0.6.1", packages: true },
+        runningPackage: null,
+        checkForPackage: () => ({ version: "0.2.0", build: 15, notes: "" }),
+        downloadPackage: () => {
+          downloadCalls += 1;
+        },
+        restartToPackage: () => {
+          restartCalls += 1;
+        },
+      },
+    },
+  });
+
+  await app.waitFor("id:ota-update-banner");
+  await app.press("id:ota-banner-apply");
+  await app.waitUntil(() => restartCalls === 1);
+  expect(downloadCalls).toBe(1);
+  expect(restartCalls).toBe(1);
+});
