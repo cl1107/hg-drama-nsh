@@ -98,7 +98,6 @@ pub(crate) fn ror32(value: u32, count: u32) -> u32 {
 }
 
 #[inline]
-#[inline]
 pub(crate) fn ror64(value: u64, count: u32) -> u64 {
     value.rotate_right(count & 63)
 }

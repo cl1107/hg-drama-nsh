@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use crate::ServiceError;
-use serde_json::Value;
+use serde_json::{json, Value};
 use url::Url;
 
 use super::crypto::{
@@ -231,16 +231,19 @@ pub fn source_model(value: &Value) -> Result<SourceModel, ServiceError> {
     let object = value
         .as_object()
         .ok_or_else(|| ServiceError::new("INVALID_RESPONSE", "App 接口未返回本集片源模型"))?;
-    let list = object
-        .get("video_list")
-        .and_then(Value::as_object)
-        .map(|list| {
-            list.values()
-                .filter(|row| row.is_object())
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
+    let list = match object.get("video_list") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter(|row| row.is_object())
+            .cloned()
+            .collect(),
+        Some(Value::Object(list)) => list
+            .values()
+            .filter(|row| row.is_object())
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    };
     Ok(SourceModel {
         video_id: object
             .get("video_id")
@@ -667,6 +670,91 @@ fn query_component(value: &str) -> String {
     output
 }
 
+pub fn build_single_video_model_request(
+    identity: &DeviceIdentity,
+    video_id: &str,
+    host: &str,
+    now_millis: u64,
+) -> Result<UpstreamRequest, ServiceError> {
+    super::device::validate_identity(identity)?;
+    if video_id.is_empty()
+        || video_id.len() > 30
+        || !video_id.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(ServiceError::new("APP_INPUT", "分集编号无效"));
+    }
+    if !approved_player_host(host) {
+        return Err(ServiceError::new(
+            "SECURITY_BLOCKED",
+            "播放主机不在允许范围",
+        ));
+    }
+    let payload = serde_json::to_string(&json!({
+        "biz_param": {
+            "detail_page_version": 0,
+            "device_level": 3,
+            "disable_digg_stat": false,
+            "from_video_id": "",
+            "need_all_video_definition": true,
+            "need_mp4_align": false,
+            "source": 9,
+            "use_os_player": false,
+            "use_server_dns": false,
+            "video_platform": 3,
+        },
+        "content_type": 1004,
+        "video_id": video_id,
+    }))
+    .map_err(|_| ServiceError::new("APP_INPUT", "单集播放请求参数序列化失败"))?;
+    let body = gzip_store(payload.as_bytes());
+    let values = V5Values::new([
+        ("aid", "8662"),
+        ("app_name", "novelread"),
+        ("version_code", "74532"),
+        ("version_name", "7.4.5.32"),
+        ("update_version_code", "74532"),
+        ("manifest_version_code", "74532"),
+        ("os", "android"),
+        ("ssmix", "a"),
+        ("channel", "update_64"),
+        ("device_platform", "android"),
+        ("device_type", "25053RT47C"),
+        ("device_brand", "Redmi"),
+        ("os_version", "16"),
+        ("os_api", "36"),
+        ("ac", "wifi"),
+        ("language", "zh"),
+        ("host_abi", "arm64-v8a"),
+        ("iid", &identity.iid),
+        ("cdid", &identity.cdid),
+        ("device_id", &identity.device_id),
+    ]);
+    let signed = sign_playback_v5(PlaybackV5Input {
+        base: format!("https://{host}/novel/player/video_model/v1/"),
+        values,
+        body: Some(body.clone()),
+        now_millis,
+        allow_empty_body: false,
+        field21: Some(312),
+        process_nonce: None,
+        process_started_millis: None,
+    })?;
+    let mut headers = signed.headers;
+    headers.insert("User-Agent".to_owned(), "okhttp/4.12.0".to_owned());
+    headers.insert("Accept".to_owned(), "application/json".to_owned());
+    headers.insert(
+        "Content-Type".to_owned(),
+        "application/json; charset=UTF-8".to_owned(),
+    );
+    headers.insert("Content-Encoding".to_owned(), "gzip".to_owned());
+    Ok(UpstreamRequest {
+        method: "POST".to_owned(),
+        url: signed.url,
+        headers,
+        body: Some(body),
+    })
+}
+
 pub fn build_v5_play_request(
     identity: &DeviceIdentity,
     video_id: &str,
@@ -708,6 +796,82 @@ pub fn build_v5_play_request(
         body: Some(body.clone()),
         now_millis,
         allow_empty_body: false,
+        field21: Some(312),
+        process_nonce: None,
+        process_started_millis: None,
+    })?;
+    let mut headers = signed.headers.clone();
+    headers.insert("User-Agent".to_owned(), "com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)".to_owned());
+    headers.insert("Accept".to_owned(), "application/json".to_owned());
+    headers.insert(
+        "Content-Type".to_owned(),
+        "application/json; charset=utf-8".to_owned(),
+    );
+    headers.insert("Content-Encoding".to_owned(), "gzip".to_owned());
+    Ok((
+        PlaybackV5Request {
+            url: signed.url,
+            headers,
+        },
+        body,
+    ))
+}
+
+pub fn build_detail_preload_request(
+    identity: &DeviceIdentity,
+    series_id: &str,
+    host: &str,
+    now_millis: u64,
+) -> Result<(PlaybackV5Request, Vec<u8>), ServiceError> {
+    super::device::validate_identity(identity)?;
+    if series_id.is_empty()
+        || series_id.len() > 30
+        || !series_id.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(ServiceError::new("APP_INPUT", "剧集编号无效"));
+    }
+    if !approved_player_host(host) {
+        return Err(ServiceError::new(
+            "SECURITY_BLOCKED",
+            "播放主机不在允许范围",
+        ));
+    }
+    let payload = serde_json::to_string(&json!({
+        "biz_param": {
+            "detail_page_version": 0,
+            "disable_digg_stat": false,
+            "need_all_video_definition": false,
+            "need_mp4_align": false,
+            "source": 7,
+            "use_os_player": false,
+            "use_server_dns": false,
+        },
+        "dr_scene": "preload",
+        "series_id": series_id,
+    }))
+    .map_err(|_| ServiceError::new("APP_INPUT", "剧集详情请求参数序列化失败"))?;
+    let body = gzip_store(payload.as_bytes());
+    let values = V5Values::new([
+        ("aid", "8662"),
+        ("app_name", "novelread"),
+        ("version_code", "74332"),
+        ("version_name", "7.4.3.32"),
+        ("channel", "vivo_8662_64"),
+        ("device_platform", "android"),
+        ("device_type", "PGT-AN10"),
+        ("os_version", "12"),
+        ("update_version_code", "74332"),
+        ("iid", &identity.iid),
+        ("cdid", &identity.cdid),
+        ("device_id", &identity.device_id),
+    ]);
+    let signed = sign_playback_v5(PlaybackV5Input {
+        base: format!("https://{host}/novel/player/multi_video_detail/preload/v1"),
+        values,
+        body: Some(body.clone()),
+        now_millis,
+        allow_empty_body: false,
+        field21: Some(312),
         process_nonce: None,
         process_started_millis: None,
     })?;
@@ -773,6 +937,7 @@ pub fn build_video_tab_request(
         body: None,
         now_millis,
         allow_empty_body: true,
+        field21: Some(312),
         process_nonce: None,
         process_started_millis: None,
     })?;
@@ -849,6 +1014,7 @@ pub fn build_legacy_play_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::upstream::DeviceIdentity;
 
     #[test]
     fn key_derivation_rejects_short_spade() {
@@ -862,6 +1028,33 @@ mod tests {
         );
         assert!(checked_media_url("http://qznovelvod.com/video.mp4", &["qznovelvod.com"]).is_err());
         assert!(checked_media_url("https://qznovelvod.com/video.mp4", &["qznovelvod.com"]).is_ok());
+    }
+
+    #[test]
+    fn detail_preload_request_targets_official_host() {
+        let identity = DeviceIdentity {
+            device_id: "123".into(),
+            iid: "456".into(),
+            cdid: "cdid-test".into(),
+        };
+        let (request, body) = build_detail_preload_request(
+            &identity,
+            "7503745441910017049",
+            PLAYER_HOSTS[0],
+            1_800_000_000_000,
+        )
+        .expect("signed detail request");
+        assert!(request
+            .url
+            .starts_with("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_detail/preload/v1?"));
+        assert_eq!(&body[..3], [0x1f, 0x8b, 8]);
+        assert!(build_detail_preload_request(
+            &identity,
+            "7503745441910017049",
+            "example.com",
+            1_800_000_000_000,
+        )
+        .is_err());
     }
 
     #[test]

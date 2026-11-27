@@ -2,8 +2,8 @@
   "name": "红果短剧-NSH",
   "icon": "assets/app-icon.png",
   "id": "com.hgdrama.nsh",
-  "version": "0.2.0",
-  "build": 15,
+  "version": "0.2.1",
+  "build": 16,
   "rust": "native",
   "capabilities": {
     "application": true,

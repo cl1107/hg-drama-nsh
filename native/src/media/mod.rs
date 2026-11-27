@@ -31,8 +31,9 @@ use crate::upstream::{
     DeviceIdentity,
     device::{build_registration_request, parse_registration_response},
     source::{
-        PLAYER_HOSTS, SourceVariant, UpstreamRequest, build_legacy_play_request,
-        build_v5_play_request, build_video_tab_request, select_all_variants,
+        PLAYER_HOSTS, SourceVariant, UpstreamRequest, VIDEO_UA, build_detail_preload_request,
+        build_legacy_play_request, build_single_video_model_request, build_v5_play_request,
+        build_video_tab_request, select_all_variants,
     },
 };
 use crate::{ServiceError, transport};
@@ -224,6 +225,100 @@ fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 30 && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+fn json_id(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => valid_id(text).then(|| text.clone()),
+        Value::Number(number) => {
+            let text = number.to_string();
+            valid_id(&text).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+fn parse_web_episodes(value: Option<&Value>) -> Vec<Value> {
+    let Some(items) = value.and_then(Value::as_array).filter(|items| !items.is_empty()) else {
+        return Vec::new();
+    };
+    let mut episodes = Vec::with_capacity(items.len());
+    for (index, episode) in items.iter().enumerate() {
+        let Some(episode_id) = episode.as_str().filter(|value| valid_id(value)) else {
+            return Vec::new();
+        };
+        episodes.push(json!({"episodeId": episode_id, "index": index + 1}));
+    }
+    episodes
+}
+
+fn parse_app_episode_list(series_id: &str, response: &Value) -> Result<Vec<Value>, ServiceError> {
+    let code = response
+        .get("Code")
+        .or_else(|| response.get("code"))
+        .and_then(|value| value.as_i64().or_else(|| value.as_str()?.parse().ok()))
+        .unwrap_or(0);
+    if code != 0 {
+        return Err(ServiceError::new(
+            "INVALID_DETAIL",
+            "App 剧集详情接口暂未提供分集列表",
+        ));
+    }
+    let data = response
+        .get("data")
+        .and_then(Value::as_object)
+        .ok_or_else(|| ServiceError::new("INVALID_DETAIL", "App 剧集详情缺少分集数据"))?;
+    let entry = data.get(series_id).ok_or_else(|| {
+        ServiceError::new("INVALID_DETAIL", "App 剧集详情返回的剧集与请求不一致")
+    })?;
+    let video_data = entry.get("video_data").unwrap_or(entry);
+    if video_data
+        .get("series_id")
+        .and_then(json_id)
+        .is_some_and(|value| value != series_id)
+    {
+        return Err(ServiceError::new(
+            "INVALID_DETAIL",
+            "App 剧集详情返回的剧集与请求不一致",
+        ));
+    }
+    let rows = video_data
+        .get("video_list")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ServiceError::new("INVALID_DETAIL", "App 剧集详情分集列表缺失"))?;
+    let mut parsed = Vec::with_capacity(rows.len());
+    for (order, item) in rows.iter().enumerate() {
+        let object = item
+            .as_object()
+            .ok_or_else(|| ServiceError::new("INVALID_DETAIL", "App 剧集详情分集格式无效"))?;
+        if let Some(item_series) = object.get("series_id").and_then(json_id) {
+            if item_series != series_id {
+                return Err(ServiceError::new(
+                    "INVALID_DETAIL",
+                    "App 剧集详情返回了其他剧集的分集",
+                ));
+            }
+        }
+        let episode_id = object
+            .get("vid")
+            .or_else(|| object.get("video_id"))
+            .and_then(json_id)
+            .ok_or_else(|| ServiceError::new("INVALID_DETAIL", "App 剧集详情分集编号无效"))?;
+        let sort_index = object
+            .get("vid_index")
+            .and_then(|value| value.as_i64().or_else(|| value.as_str()?.parse().ok()))
+            .unwrap_or(0);
+        parsed.push((sort_index, order, episode_id));
+    }
+    if parsed.is_empty() {
+        return Err(ServiceError::new("INVALID_DETAIL", "App 剧集详情分集列表为空"));
+    }
+    parsed.sort_by_key(|(sort_index, order, _)| (*sort_index, *order));
+    Ok(parsed
+        .into_iter()
+        .enumerate()
+        .map(|(index, (_, _, episode_id))| json!({"episodeId": episode_id, "index": index + 1}))
+        .collect())
+}
+
 fn cached_detail(series_id: &str) -> Option<Value> {
     let mut cache = detail_cache().lock().expect("detail cache lock");
     let position = cache
@@ -319,19 +414,7 @@ fn parse_detail(series_id: &str, body: &[u8]) -> Result<Value, ServiceError> {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| ServiceError::new("INVALID_DETAIL", "剧集标题缺失"))?;
-    let raw_episodes = detail
-        .get("vid_list")
-        .and_then(Value::as_array)
-        .filter(|episodes| !episodes.is_empty())
-        .ok_or_else(|| ServiceError::new("INVALID_DETAIL", "剧集分集列表缺失"))?;
-    let mut episodes = Vec::with_capacity(raw_episodes.len());
-    for (index, episode) in raw_episodes.iter().enumerate() {
-        let episode_id = episode
-            .as_str()
-            .filter(|value| valid_id(value))
-            .ok_or_else(|| ServiceError::new("INVALID_DETAIL", "剧集分集编号无效"))?;
-        episodes.push(json!({"episodeId": episode_id, "index": index + 1}));
-    }
+    let episodes = parse_web_episodes(detail.get("vid_list"));
     let celebrities = detail
         .get("celebrities")
         .and_then(Value::as_array)
@@ -470,10 +553,19 @@ fn parse_play_model(response: &Value, vid: &str) -> Result<Value, ServiceError> 
         .and_then(|data| data.get("1004").or_else(|| data.get("video_model_data")))
         .or_else(|| response.get("data"))
         .unwrap_or(response);
-    let entry = entries
-        .get(vid)
-        .ok_or_else(|| ServiceError::new("MISSING_MODEL", "App 接口未返回所选分集"))?;
-    let model = entry.get("video_model").unwrap_or(entry);
+    let model = if let Some(entry) = entries.get(vid) {
+        entry.get("video_model").unwrap_or(entry)
+    } else if let Some(data) = response.get("data").and_then(Value::as_object) {
+        if let Some(raw_model) = data.get("video_model") {
+            raw_model
+        } else if data.contains_key("video_list") {
+            response.get("data").expect("data object")
+        } else {
+            return Err(ServiceError::new("MISSING_MODEL", "App 接口未返回所选分集"));
+        }
+    } else {
+        return Err(ServiceError::new("MISSING_MODEL", "App 接口未返回所选分集"));
+    };
     if let Some(model) = model.as_str() {
         serde_json::from_str(model)
             .map_err(|_| ServiceError::new("INVALID_RESPONSE", "App 片源模型 JSON 无效"))
@@ -516,6 +608,96 @@ async fn request_source_model(request: UpstreamRequest, vid: &str) -> Result<Val
     parse_play_model(&response, vid)
 }
 
+fn parse_fallback_api_url(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    if let Some(raw) = value.as_str() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed.starts_with('{') {
+            let parsed: Value = serde_json::from_str(trimmed).ok()?;
+            return parsed
+                .get("fallback_api")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+        }
+        return Some(trimmed.to_owned());
+    }
+    if let Some(items) = value.as_array() {
+        return items
+            .first()
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+    }
+    value
+        .get("fallback_api")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+async fn resolve_fallback_codec_variants(
+    model: &Value,
+    vid: &str,
+    quality: &str,
+) -> Option<Vec<SourceVariant>> {
+    let raw_url = parse_fallback_api_url(model.get("fallback_api"))?;
+    let base = transport::checked_public_https_url(&raw_url).ok()?;
+    let mut headers = std::collections::BTreeMap::new();
+    headers.insert("Accept".to_owned(), "application/json".to_owned());
+    headers.insert("User-Agent".to_owned(), VIDEO_UA.to_owned());
+    for codec_type in ["1", "3"] {
+        let mut url = base.clone();
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .filter(|(k, _)| k != "codec_type")
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        {
+            let mut query = url.query_pairs_mut();
+            query.clear();
+            for (k, v) in pairs {
+                query.append_pair(&k, &v);
+            }
+            query.append_pair("codec_type", codec_type);
+        }
+        let client = transport::client().ok()?.clone();
+        let mut request = client
+            .get(url)
+            .timeout(Duration::from_secs(15));
+        for (name, value) in &headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
+        let response = match request.send().await {
+            Ok(response) if response.status() == StatusCode::OK => response,
+            _ => continue,
+        };
+        let body = match transport::read_body(response, PLAY_MODEL_MAX_BYTES).await {
+            Ok(body) if !body.is_empty() => body,
+            _ => continue,
+        };
+        let outer: Value = match serde_json::from_slice(&body) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let Some(data) = outer.get("video_info").and_then(|v| v.get("data")) else {
+            continue;
+        };
+        if let Ok(variants) = select_all_variants(data, vid, Some(quality), false, false, 0)
+            && !variants.is_empty()
+        {
+            return Some(variants);
+        }
+    }
+    None
+}
+
 async fn fetch_source_attempt(
     identity: &DeviceIdentity,
     vid: &str,
@@ -535,7 +717,8 @@ async fn fetch_source_attempt(
                 continue;
             }
         };
-        let routes: [Result<UpstreamRequest, ServiceError>; 2] = [
+        let routes: [Result<UpstreamRequest, ServiceError>; 3] = [
+            build_single_video_model_request(identity, vid, host, timestamp),
             build_video_tab_request(identity, vid, host, timestamp),
             build_v5_play_request(identity, vid, payload, host, timestamp).map(
                 |(request, body)| UpstreamRequest {
@@ -557,15 +740,26 @@ async fn fetch_source_attempt(
             let model = match request_source_model(request, vid).await {
                 Ok(model) => model,
                 Err(error) => {
-                    last_error = Some(error);
+                    if last_error
+                        .as_ref()
+                        .is_none_or(|prev: &ServiceError| prev.code == "EMPTY_RESPONSE")
+                    {
+                        last_error = Some(error);
+                    }
                     continue;
                 }
             };
             let selected = match select_all_variants(&model, vid, Some(quality), false, true, 0) {
                 Ok(selected) => selected,
                 Err(error) => {
-                    last_error = Some(error);
-                    continue;
+                    if let Some(negotiated) =
+                        resolve_fallback_codec_variants(&model, vid, quality).await
+                    {
+                        negotiated
+                    } else {
+                        last_error = Some(error);
+                        continue;
+                    }
                 }
             };
             match selected
@@ -695,9 +889,113 @@ async fn fetch_detail_uncached(series_id: &str) -> Result<Value, ServiceError> {
             format!("剧集页面请求失败（HTTP {status}）"),
         ));
     }
-    let value = parse_detail(series_id, &body)?;
+    let mut value = parse_detail(series_id, &body)?;
+    let needs_app_episodes = value
+        .get("episodes")
+        .and_then(Value::as_array)
+        .is_none_or(|episodes| episodes.is_empty());
+    if needs_app_episodes {
+        let episodes = fetch_app_episodes(series_id).await?;
+        value
+            .as_object_mut()
+            .ok_or_else(|| ServiceError::new("INVALID_DETAIL", "剧集详情格式异常"))?
+            .insert("episodes".into(), Value::Array(episodes));
+    }
+    if value
+        .get("episodes")
+        .and_then(Value::as_array)
+        .is_none_or(|episodes| episodes.is_empty())
+    {
+        return Err(ServiceError::new("INVALID_DETAIL", "剧集分集列表缺失"));
+    }
     cache_detail(series_id, &value);
     Ok(value)
+}
+
+async fn fetch_app_episodes_with_identity(
+    identity: &DeviceIdentity,
+    series_id: &str,
+) -> Result<Vec<Value>, ServiceError> {
+    let mut last_error = None;
+    for host in PLAYER_HOSTS {
+        let timestamp = match now_millis() {
+            Ok(timestamp) => timestamp,
+            Err(error) => {
+                last_error = Some(error);
+                continue;
+            }
+        };
+        let (request, body) = match build_detail_preload_request(identity, series_id, host, timestamp)
+        {
+            Ok(request) => request,
+            Err(error) => {
+                last_error = Some(error);
+                continue;
+            }
+        };
+        let response = match request_upstream(
+            reqwest::Method::POST,
+            &request.url,
+            &["fqnovel.com"],
+            &request.headers,
+            Some(body),
+            PLAY_MODEL_MAX_BYTES,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                last_error = Some(error);
+                continue;
+            }
+        };
+        let (status, _, body) = response;
+        if status != StatusCode::OK {
+            last_error = Some(ServiceError::new(
+                "UPSTREAM_HTTP",
+                format!("App 剧集详情请求失败（HTTP {status}）"),
+            ));
+            continue;
+        }
+        if body.is_empty() {
+            last_error = Some(ServiceError::new("EMPTY_RESPONSE", "App 剧集详情接口返回空响应"));
+            continue;
+        }
+        let payload: Value = match serde_json::from_slice(&body) {
+            Ok(payload) => payload,
+            Err(_) => {
+                last_error = Some(ServiceError::new(
+                    "INVALID_RESPONSE",
+                    "App 剧集详情响应不是有效 JSON",
+                ));
+                continue;
+            }
+        };
+        match parse_app_episode_list(series_id, &payload) {
+            Ok(episodes) => return Ok(episodes),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        ServiceError::new("INVALID_DETAIL", "App 剧集详情接口未返回分集列表")
+    }))
+}
+
+async fn fetch_app_episodes(series_id: &str) -> Result<Vec<Value>, ServiceError> {
+    let identity = playback_device().await?;
+    match fetch_app_episodes_with_identity(&identity, series_id).await {
+        Ok(episodes) => Ok(episodes),
+        Err(first_error) if first_error.code == "EMPTY_RESPONSE" => {
+            let mut cache = device_cache().lock().await;
+            *cache = None;
+            drop(cache);
+            let identity = playback_device().await?;
+            fetch_app_episodes_with_identity(&identity, series_id)
+                .await
+                .map_err(|_| first_error)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Loads and validates a series detail page, retaining only the metadata
@@ -1130,7 +1428,8 @@ pub(crate) async fn prepare_from_variants(
 
 #[cfg(test)]
 mod tests {
-    use super::{Variant, order_variants, parse_detail};
+    use super::{Variant, order_variants, parse_app_episode_list, parse_detail};
+    use serde_json::json;
 
     fn variant(codec: &str, quality: &str) -> Variant {
         Variant {
@@ -1177,5 +1476,52 @@ mod tests {
         assert_eq!(detail["title"], "测试剧");
         assert_eq!(detail["episodes"][0]["episodeId"], "456");
         assert_eq!(detail["celebrities"][0]["role"], "主角");
+    }
+
+    #[test]
+    fn website_opaque_vid_list_does_not_fail_metadata_parse() {
+        let body = r#"<script>_ROUTER_DATA = {"loaderData":{"player_(series_id)/page":{"isSuccess":true,"seriesDetail":{"series_id":"123","series_name":"测试剧","vid_list":["v1_opaqueTokenAAAAAAAAAAAAAA"]}}}}</script>"#;
+        let detail = parse_detail("123", body.as_bytes()).expect("detail");
+        assert_eq!(detail["title"], "测试剧");
+        assert_eq!(detail["episodes"], json!([]));
+    }
+
+    #[test]
+    fn app_episode_list_keeps_requested_series_and_sorts_by_index() {
+        let response = json!({
+            "code": 0,
+            "data": {
+                "7503745441910017049": {
+                    "video_data": {
+                        "series_id": "7503745441910017049",
+                        "series_title": "宴律",
+                        "video_list": [
+                            {"vid": "7503780574541122623", "vid_index": 2, "series_id": "7503745441910017049"},
+                            {"vid": 7503780574541122622u64, "vid_index": 1, "series_id": "7503745441910017049"}
+                        ]
+                    }
+                }
+            }
+        });
+        let episodes = parse_app_episode_list("7503745441910017049", &response).expect("episodes");
+        assert_eq!(episodes[0]["episodeId"], "7503780574541122622");
+        assert_eq!(episodes[0]["index"], 1);
+        assert_eq!(episodes[1]["episodeId"], "7503780574541122623");
+        assert_eq!(episodes[1]["index"], 2);
+    }
+
+    #[test]
+    fn app_episode_list_rejects_another_series() {
+        let response = json!({
+            "code": 0,
+            "data": {
+                "123": {
+                    "video_data": {
+                        "video_list": [{"vid": "456", "vid_index": 1, "series_id": "999"}]
+                    }
+                }
+            }
+        });
+        assert!(parse_app_episode_list("123", &response).is_err());
     }
 }

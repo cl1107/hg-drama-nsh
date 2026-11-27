@@ -15,7 +15,7 @@ const MAGIC: [u8; 16] = [
 ];
 const SIGN_KEY: [u8; 32] = [
     0xb2, 0x3c, 0x2a, 0x47, 0x0a, 0x20, 0xd1, 0x05, 0xdc, 0x3f, 0x8c, 0x44, 0x38, 0xf8, 0x27, 0x2e,
-    0xd4, 0x6d, 0x6c, 0x89, 0xff, 0xdc, 0xed, 0xdd, 0x51, 0x08, 0x69, 0x8d, 0x26, 0xe9, 0x48, 0x9d,
+    0xd4, 0x6d, 0x6c, 0x89, 0xff, 0xdc, 0xde, 0xdd, 0x51, 0x08, 0x69, 0x8d, 0x26, 0xe9, 0x48, 0x9d,
 ];
 pub(crate) const HASH_TABLE: [u32; 64] = [
     0xebb6_4faf,
@@ -124,6 +124,7 @@ pub struct PlaybackV5Input {
     pub body: Option<Vec<u8>>,
     pub now_millis: u64,
     pub allow_empty_body: bool,
+    pub field21: Option<u16>,
     pub process_nonce: Option<[u8; 18]>,
     pub process_started_millis: Option<u64>,
 }
@@ -494,6 +495,7 @@ fn medusa(
     f13: &[u8; 20],
     timestamp: u32,
     values: &V5Values,
+    field21: u16,
     process_nonce: &str,
     process_started: u64,
     rng: &mut impl RngCore,
@@ -501,6 +503,7 @@ fn medusa(
     let device_id = values.get("device_id").unwrap_or_default();
     let os_version = values.get("os_version").unwrap_or_default();
     let device_type = values.get("device_type").unwrap_or_default();
+    let device_brand = values.get("device_brand").unwrap_or("HONOR");
     let channel = values.get("channel").unwrap_or_default();
     let version_name = values.get("version_name").unwrap_or_default();
     let flags = [0_u8; 8];
@@ -516,9 +519,9 @@ fn medusa(
         .text(22, os_version)
         .sint(25, process_started as i128)
         .text(30, device_type)
-        .text(31, "HONOR")
+        .text(31, device_brand)
         .text(32, device_type)
-        .text(34, "HONOR");
+        .text(34, device_brand);
     let env = V5Proto::default()
         .text(6, "v04.10.03.04-bugfix")
         .text(8, channel)
@@ -548,7 +551,7 @@ fn medusa(
         )
         .sint(17, timestamp as i128)
         .text(20, "none")
-        .sint(21, 377)
+        .sint(21, i128::from(field21))
         .message(23, &env)
         .text(24, "{\"cmr\":16777216,\"cmr2\":16777216,\"un_h\":11,\"vpn\":0,\"kd\":0,\"dyn\":\"\",\"do\":1,\"tk\":true}");
     let nonce = random32(rng);
@@ -797,6 +800,7 @@ pub fn sign_playback_v5(input: PlaybackV5Input) -> Result<PlaybackV5Request, Ser
             &f13,
             timestamp,
             &values,
+            input.field21.unwrap_or(312),
             &process_nonce,
             process_started,
             &mut rng,
@@ -868,5 +872,56 @@ mod tests {
             encode_component("中文 !*'()~ +&=%"),
             "%E4%B8%AD%E6%96%87%20%21*%27%28%29~%20%2B%26%3D%25"
         );
+    }
+
+    #[test]
+    fn xmxor_and_carrier_match_js_reference_vectors() {
+        let d = hex_decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f").unwrap();
+        let k = hex_decode("f0e1d2c3b4a5968778695a4b3c2d1e0f00112233445566778899aabbccddeeff").unwrap();
+        assert_eq!(
+            hex_encode(&xmxor(&d, &k)),
+            "fd33e9f5a27c8e434961ac613de0b52c1da8a6ee17162cfa1a46ca6d23f43760",
+            "xmxor mismatch"
+        );
+        let src = vec![0x13_u8; 256];
+        let ck = hex_decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let iv: [u8; 16] = hex_decode("101112131415161718191a1b1c1d1e1f").unwrap().try_into().unwrap();
+        let expected = [
+            "3753131b131793111313131b031393131213331b13179313",
+            "bf53331b1317931313533313131713111353331b03131311",
+            "495333131313931312531313031793131353131303171313",
+            "d71313130313131112131313131713111253331303139313",
+        ];
+        for (ts, exp) in expected.iter().enumerate() {
+            let out = CarrierV5::new(&ck, ts as u32).encrypt(&src, &iv);
+            assert_eq!(&hex_encode(&out)[..48], *exp, "carrier ts={ts} mismatch");
+        }
+
+        struct FixedRng(u8);
+        impl RngCore for FixedRng {
+            fn next_u32(&mut self) -> u32 { u32::from_le_bytes([self.0; 4]) }
+            fn next_u64(&mut self) -> u64 { u64::from_le_bytes([self.0; 8]) }
+            fn fill_bytes(&mut self, dest: &mut [u8]) { dest.fill(self.0); }
+        }
+        let values = V5Values::new([
+            ("aid", "8662"), ("app_name", "novelread"), ("version_code", "74332"),
+            ("version_name", "7.4.3.32"), ("channel", "vivo_8662_64"), ("device_platform", "android"),
+            ("device_type", "PGT-AN10"), ("os_version", "12"), ("update_version_code", "74332"),
+            ("iid", "2234567890123456789"), ("cdid", "synthetic-device"), ("device_id", "1234567890123456789"),
+        ]);
+        let query = "aid=8662&app_name=novelread&version_code=74332&version_name=7.4.3.32&channel=vivo_8662_64&device_platform=android&device_type=PGT-AN10&os_version=12&update_version_code=74332&iid=2234567890123456789&cdid=synthetic-device&device_id=1234567890123456789&_rticket=1800000000011";
+        let body = hex_decode("1f8b0800000000000013ab564a54b232ac0500afac1b5607000000").unwrap();
+        let query_hash = sm3(query.as_bytes());
+        let body_hash = md5_bytes(&body);
+        assert_eq!(branch(&query_hash, &body_hash, 1_800_000_000), 12);
+        let f13 = hash_f13(&query_hash, &body_hash, 1_800_000_000).unwrap();
+        assert_eq!(hex_encode(&query_hash[..6]), "407518d247bc", "query_hash mismatch");
+        assert_eq!(hex_encode(&f13), "e6f93fe7d46106349d7e7581d105beb67d93d9dd", "f13 mismatch");
+        let nonce_b64 = b64_urlsafe_nopad(&[0x80_u8; 18]);
+        assert_eq!(nonce_b64, "gICAgICAgICAgICAgICAgICA", "nonce_b64 mismatch");
+        let mut rng = FixedRng(0x80);
+        let actual = medusa(&query_hash, &f13, 1_800_000_000, &values, 377, &nonce_b64, 1_800_000_000_000, &mut rng);
+        assert_eq!(&actual[..80], "BdJJay2ZBqFJp0QoP2fnRyK/hT2AgAABFIqgiICAASYBGGjqqxZtSjVVjIov6E2uq8opLb1Fk0d/+TFq");
+        assert_eq!(&actual[actual.len()-40..], "TK+ouYbribiUfOe3SC2ddzei+//7//v/+/+AgA==");
     }
 }

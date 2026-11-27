@@ -1,5 +1,25 @@
 # 开发交接
 
+## 2026-11-28 修复 Rust v5 SIGN_KEY 字节错误导致的「上游暂未提供本集正片片源」
+
+- **根因**：工作区新增 `fetch_app_episodes` 走 Rust `sign_playback_v5` 后，播放页报「上游暂未提供本集正片片源」（`EMPTY_RESPONSE`）。排查确认 [native/src/upstream/v5.rs](../native/src/upstream/v5.rs) 的 `SIGN_KEY` 第 22 字节误写为 `0xed`（正确应为 `0xde`，与 JS/TSX 参考实现 `ffdcdedd` 一致），导致所有 Rust v5 签名请求（含 `multi_video_detail/preload/v1`）均返回 HTTP 200 空包；同时 `v5.rs` 仍硬编码旧 `field21 = 377`，且 `native/src/upstream/source.rs` 仅解析对象形式的 `video_list`、未接入单集 `video_model/v1/`。
+- **修复**：
+  - [native/src/upstream/v5.rs](../native/src/upstream/v5.rs)：修正 `SIGN_KEY` 字节 `0xed` → `0xde`，`PlaybackV5Input` 支持 `field21`（默认 `312`），`medusa()` 读取 `device_brand`，新增 `xmxor` / `CarrierV5` / `medusa` 与 JS 参考向量的逐字节单测。
+  - [native/src/upstream/source.rs](../native/src/upstream/source.rs)、[native/src/media/mod.rs](../native/src/media/mod.rs)：`source_model` 兼容数组形式 `video_list`，新增 `build_single_video_model_request`（`video_model/v1/`）与 `fallback_api` 编码协商，`fetch_app_episodes` 遇 `EMPTY_RESPONSE` 自动换新匿名设备重试一次。
+- **验证**：Rust 离线单测 **38/38**、在线回归 **2/2** 及热播榜实测共 3 部剧（《宴律》4.83s、《觉醒伪神：神明弃我我自为神9》3.18s、《全球死考：刚下刑场你让我去考试三季》2.45s）全部通过 `/detail` → 取源 → 下载 CENC 解密 → Range 206 校验；`nsh check`、`nsh build`、`App.test.tsx` **15/15**、`session.test.tsx` **2/2**、`resolver.test.tsx` **8/8** 通过；已通过 `./tools/package-macos` 重打包替换 `/Applications/红果短剧-NSH.app` 并通过严格签名校验。
+
+## 2026-11-27 官网 vid_list 改为 v1_ 令牌导致分集编号无效
+
+- 现象：播放页报「剧集分集编号无效」。官网 `https://hongguoduanju.com/player/{seriesId}` 的 `seriesDetail.vid_list` 已从数字分集 ID 改为 `v1_...` 令牌，且只返回 `accessible_episode_cnt`（如 3 集），不再给出完整数字 ID 列表。
+- 修复：官网页面仍用于标题/封面/简介等元数据；当 `vid_list` 不是数字 ID 时，改走 App `POST /novel/player/multi_video_detail/preload/v1`（v5 签名）。实测《宴律》返回 76 集、首集仍为 19 位数字 ID。
+- 构建号 16 已通过 `./tools/package-macos` 替换 `/Applications/红果短剧-NSH.app`，`codesign --verify --deep --strict` 通过。下一步：实机打开安装版播放验收。
+
+## 2026-11-27 本机安装包替换为构建号 15
+
+- 仓库 `master` `8cca387`（`nsh.json` `0.2.0` / `build: 15`，含 ByteVC2 CPU 直解与 NSH 0.7.1）已通过 `./tools/package-macos` 打包，替换 `/Applications/红果短剧-NSH.app`。
+- 安装产物：宿主 `Contents/MacOS/NSH` arm64，无 Node 后端；Frameworks 19 个动态库（含 `libmpv.dylib`）；`codesign --verify --deep --strict` 通过。旧安装为构建号 13。
+- 下一步：实机打开安装版验收在线播放、ByteVC2 出画与 OTA 入口。
+
 ## 2026-11-26 macOS ByteVC2 CPU 直解
 
 - 真实样本为 `bvc2` 视频轨道、`bv2C` 配置和 `cenc` 加密，Rust 媒体层已识别并保留配置。Librempeg 专用解码器完整解码同集 360p 样本的 2731 帧。macOS 系统解码器对原样本和改标签样本均无法读出画面。
