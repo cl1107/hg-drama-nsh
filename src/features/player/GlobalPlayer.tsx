@@ -1,9 +1,10 @@
-import { signal, View, Text, Image, List, Scroll, cleanup, effect, keymap, Clipboard, token, type ListRef } from "nsh";
+import { signal, View, Text, Image, List, Scroll, cleanup, effect, untracked, keymap, Clipboard, token, type ListRef } from "nsh";
 import { currentWindow, isAvailable, type WindowMode } from "nsh/desktop";
 import { Button as BaseButton, Slider, Sheet, Input } from "nsh/base";
 import { Button, FilterChip } from "../../ui/controls";
 import { Icon, IconButton, type IconName } from "../../ui/icons";
-import { playbackState, startPlayback, cancelPlayback, retryPlayback, type Playback } from "../player/session";
+import * as playbackSession from "./session";
+import type { Playback } from "./session";
 import { preferences, updatePreferences, subscriptions, isFavorite, isLiked, isSubscribed, recordWatchProgress, toggleFavorite, toggleLike, toggleSubscription, type QualityOption, type DanmakuFontWeight, type DanmakuSpeed } from "../../stores/user-data";
 import { servicePost } from "../../service-client";
 import { startEpisodeDownload } from "./session";
@@ -16,7 +17,11 @@ export const isVideoFullscreen = () => videoFullscreen();
 const FULLSCREEN_IDLE_HIDE_MS = 3000;
 
 function time(value: number) { const seconds = Math.max(0, Math.floor(value)); return `${String(Math.floor(seconds / 60)).padStart(2,"0")}:${String(seconds % 60).padStart(2,"0")}`; }
-export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: string) => void; onFind: () => void; onBack?: () => void }) {
+export function GlobalPlayer(props: { recommend?: boolean; active?: boolean; onNotify: (message: string) => void; onFind: () => void; onBack?: () => void }) {
+ const { playbackState, startPlayback, cancelPlayback, retryPlayback } = props.recommend
+  ? playbackSession.createPlaybackSession()
+  : playbackSession;
+ const active = () => props.active ?? true;
  const feed = createRecommendationFeed();
  const tab = signal<RecommendationChannel | "关注">("推荐"), current = signal<Recommendation | null>(null);
  const paused = signal(false), muted = signal(false), rate = signal(1), position = signal(0), duration = signal(0), failure = signal("");
@@ -37,7 +42,7 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
  let episodeScrollTimer: ReturnType<typeof setTimeout> | undefined;
  let lastMousePos: { x: number; y: number } | null = null;
  let hiddenAt = 0;
- const fullscreen = () => videoFullscreen();
+ const fullscreen = () => active() && videoFullscreen();
  const clearIdleTimer = () => {
   if (idleTimer !== undefined) {
    clearTimeout(idleTimer);
@@ -223,14 +228,26 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
   catch (error) { props.onNotify(error instanceof Error ? error.message : "下载失败，请重试"); }
   finally { busyAction.set(false); }
  };
- keymap.bind({
-  escape: () => {if(fullscreen())toggleFullscreen();}, f: () => {if(ready() && isAvailable)toggleFullscreen();}, space: () => { revealFullscreenControls(); togglePlay(); }, down: () => { revealFullscreenControls(); void step(1); }, up: () => { revealFullscreenControls(); void step(-1); },
-  right: () => { revealFullscreenControls(); player?.seek(Math.min(duration(),position()+5)); }, left: () => { revealFullscreenControls(); player?.seek(Math.max(0,position()-5)); },
-  m: () => { revealFullscreenControls(); muted.set(!muted()); },
-  p: () => { if (!panel() && ready()) stepEpisode(-1); },
-  n: () => { if (!panel() && ready()) stepEpisode(1); },
-  d: () => { if (ready()) { revealFullscreenControls(); updatePreferences({ danmakuEnabled: !preferences().danmakuEnabled }); } },
- }, {when:"notEditing"});
+ effect(() => {
+  if (!active()) {
+   untracked(() => {
+    setFullscreen(false);
+    openPanel(null);
+    hovered.set(false);
+    wheel = 0;
+    flush();
+   });
+   return;
+  }
+  return keymap.bind({
+   escape: () => {if(fullscreen())toggleFullscreen();}, f: () => {if(ready() && isAvailable)toggleFullscreen();}, space: () => { revealFullscreenControls(); togglePlay(); }, down: () => { revealFullscreenControls(); void step(1); }, up: () => { revealFullscreenControls(); void step(-1); },
+   right: () => { revealFullscreenControls(); player?.seek(Math.min(duration(),position()+5)); }, left: () => { revealFullscreenControls(); player?.seek(Math.max(0,position()-5)); },
+   m: () => { revealFullscreenControls(); muted.set(!muted()); },
+   p: () => { if (!panel() && ready()) stepEpisode(-1); },
+   n: () => { if (!panel() && ready()) stepEpisode(1); },
+   d: () => { if (ready()) { revealFullscreenControls(); updatePreferences({ danmakuEnabled: !preferences().danmakuEnabled }); } },
+  }, {when:"notEditing"});
+ });
  // 全屏无操作时自动隐藏控制 UI，打开面板或退出全屏时暂停/清除计时。
  effect(() => {
   const isFs = fullscreen();
@@ -260,7 +277,8 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
   }
  });
  // 播放期间请服务持有防息屏断言，暂停/出错/退出即释放。
- const playing = () => ready() !== null && !paused() && !playbackError();
+ const mediaPaused = () => !active() || paused();
+ const playing = () => !mediaPaused() && ready() !== null && !playbackError();
  effect(() => { const active = playing(); void servicePost("/keep-awake", { active }).catch(() => {}); });
  cleanup(() => { disposed = true; clearIdleTimer(); clearEpisodeScrollTimer(); stopModeListener?.(); setFullscreen(false); flush(); feed.cancel(); cancelPlayback(); void servicePost("/keep-awake", { active: false }).catch(() => {}); });
  if(props.recommend)void changeTab("推荐");
@@ -293,7 +311,7 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
    if (Math.abs(wheel)>80) { lastWheel=now; const direction=wheel>0?1:-1;wheel=0;void step(direction); }
   }}>
   <If when={!!current()?.cover && !ready()}><Image src={current()?.cover ?? ""} class="absolute inset-0 opacity-25" style={{width:"100%",height:"100%",objectFit:"contain"}} /></If>
-  <If when={ready()}>{item => <PlayerVideo testID="global-video" codec={item().codec} ref={node => player=node} src={item().mediaUrl} paused={paused()} muted={muted()} rate={rate()} class="absolute inset-0" style={{width:"100%",height:"100%"}}
+  <If when={ready()}>{item => <PlayerVideo testID="global-video" codec={item().codec} ref={node => player=node} src={item().mediaUrl} paused={mediaPaused()} muted={muted()} rate={rate()} class="absolute inset-0" style={{width:"100%",height:"100%"}}
    onLoad={event => {duration.set(event.duration);failure.set("");lastPlayback=item();const initial=item().initialPositionSec;if(typeof initial === "number" && initial>0 && initial<event.duration-2)player?.seek(initial);}}
    onProgress={event => {position.set(event.currentTime);duration.set(event.duration);lastPlayback=item();if(Date.now()-lastSaved>2500){lastSaved=Date.now();flush();}}}
    onError={event => { failure.set("本集播放失败，请重试或切换短剧");paused.set(true); }}
@@ -317,7 +335,7 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
      episodeId={item().episode.episodeId}
      positionSec={position()}
      durationSec={duration()}
-     paused={paused() || !!playbackError()}
+     paused={mediaPaused() || !!playbackError()}
      enabled={preferences().danmakuEnabled && (!fullscreen() || preferences().danmakuShowInFullscreen)}
      opacity={preferences().danmakuOpacity}
      fontSize={preferences().danmakuFontSize}
@@ -691,5 +709,5 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
    </If>
   </Sheet>
  </View>; }
- return <View class="flex-1"><Surface /></View>;
+ return <View class="flex-1" style={{ display: active() ? "flex" : "none" }}><Surface /></View>;
 }

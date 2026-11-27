@@ -163,7 +163,7 @@ function App() {
     </If>
     <View class="flex-1 relative">
       <If when={!isVideoFullscreen()}><View desktop={{ windowDrag: true }} class="absolute top-0 left-0 right-0 h-6" /></If>
-      <If when={page() === "推荐"}><RecommendView onNotify={notify} onFind={() => navigate("找剧")} onLogin={() => navigate("登录")} /></If>
+      <RecommendView active={page() === "推荐"} onNotify={notify} onFind={() => navigate("找剧")} />
       <If when={page() !== "推荐"}>
         <View class={isVideoFullscreen() ? "flex-1" : "flex-1 p-6 gap-4"}>
           <If when={!hasOwnHeading() && !isVideoFullscreen()}><PageHeader title={page()} /></If>

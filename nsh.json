@@ -3,7 +3,7 @@
   "icon": "assets/app-icon.png",
   "id": "com.hgdrama.nsh",
   "version": "0.2.1",
-  "build": 16,
+  "build": 17,
   "rust": "native",
   "capabilities": {
     "application": true,

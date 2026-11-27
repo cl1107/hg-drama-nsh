@@ -1,5 +1,10 @@
 # 开发交接
 
+## 2026-11-28 推荐页切出暂停、返回续播
+
+- 推荐播放器随侧栏页面切换暂停和恢复，保留当前剧集、播放位置及手动暂停状态。推荐与普通播放使用独立会话，隐藏推荐页时解除播放器快捷键并释放防息屏。
+- `./tools/nsh check`、`./tools/nsh build` 和 `App.test.tsx`（15/15）通过。渲染跟踪确认同一个视频节点切出时收到暂停、切回时恢复，且返回时不重复请求片源。实际带声媒体的桌面验收仍待进行。
+
 ## 2026-11-28 修复 Rust v5 SIGN_KEY 字节错误导致的「上游暂未提供本集正片片源」
 
 - **根因**：工作区新增 `fetch_app_episodes` 走 Rust `sign_playback_v5` 后，播放页报「上游暂未提供本集正片片源」（`EMPTY_RESPONSE`）。排查确认 [native/src/upstream/v5.rs](../native/src/upstream/v5.rs) 的 `SIGN_KEY` 第 22 字节误写为 `0xed`（正确应为 `0xde`，与 JS/TSX 参考实现 `ffdcdedd` 一致），导致所有 Rust v5 签名请求（含 `multi_video_detail/preload/v1`）均返回 HTTP 200 空包；同时 `v5.rs` 仍硬编码旧 `field21 = 377`，且 `native/src/upstream/source.rs` 仅解析对象形式的 `video_list`、未接入单集 `video_model/v1/`。

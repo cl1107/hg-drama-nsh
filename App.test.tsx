@@ -58,7 +58,7 @@ test("discovery pages, settings, and sidebar stay reachable without debug-source
  await app.waitFor("发现");
 });
 
-test("recommendation player opens episodes and navigating away removes its video", async () => {
+test("recommendation player pauses when hidden and preserves its session on return", async () => {
  const playback = {seriesId:candidate.id,title:candidate.title,episode:{episodeId:"123",index:1},episodes:[{episodeId:"123",index:1},{episodeId:"124",index:2}],codec:"hevc",quality:"1080p",encrypted:true,mediaUrl:serviceConfig.baseUrl+"/media/"+"a".repeat(64)};
  const app = await open("./App.tsx",{platform:"macos",width:1480,height:820,network:{...routes,[`POST ${serviceConfig.baseUrl}/play`]:{status:200,body:JSON.stringify(playback)}}});
  await app.waitFor("id:global-video");
@@ -66,12 +66,27 @@ test("recommendation player opens episodes and navigating away removes its video
  await app.press("选集 · 全2集");
  await app.waitFor("关闭播放面板");
  await app.press("关闭播放面板");
+ const awakeRequests = () => app.requests().filter(request => request.url === serviceConfig.baseUrl + "/keep-awake");
+ const playRequests = () => app.requests().filter(request => request.url === serviceConfig.baseUrl + "/play");
+ await app.waitUntil(() => awakeRequests().at(-1)?.body === '{"active":true}');
+ await app.press("找剧 >> nth=0");
+ await app.waitFor("输入剧名 / 关键词");
+ await app.waitFor("id:global-video",{state:"gone"});
+ await app.waitUntil(() => awakeRequests().at(-1)?.body === '{"active":false}');
+ await app.press("推荐");
+ await app.waitFor("id:global-video");
+ await app.waitUntil(() => awakeRequests().at(-1)?.body === '{"active":true}');
+ expect(playRequests().length).toBe(1);
+
+ await app.hover("id:recommendation-page");
  await app.press("label:暂停播放");
  await app.waitFor("label:继续播放");
  await app.press("找剧 >> nth=0");
- await app.waitFor("输入剧名 / 关键词");
-  await app.waitFor("id:global-video",{state:"gone"});
-  expect(app.texts()).not.toContain("App 分类筛选");
+ await app.waitFor("id:global-video",{state:"gone"});
+ await app.press("推荐");
+ await app.hover("id:recommendation-page");
+ await app.waitFor("label:继续播放");
+ expect(awakeRequests().at(-1)?.body).toBe('{"active":false}');
 });
 
 test("history playback toggles fullscreen in place without blanking the player", async () => {
