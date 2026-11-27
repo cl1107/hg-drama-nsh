@@ -16,6 +16,31 @@ impl LocalService {
 #[module]
 struct NativeCrypto;
 
+/// Native video decoder capabilities of this installed host.
+#[module]
+struct NativeVideo;
+
+#[module]
+impl NativeVideo {
+    /// Whether this host has a working libmpv software renderer and BVC2 decoder.
+    pub fn bytevc2_available() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            bytevc2_video::available()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[nsh_core::element::native_components(macos)]
+fn native_components(components: &nsh_platform_macos::Components) {
+    components.register("hg.bytevc2-video", bytevc2_video::factory());
+}
+
 #[module]
 impl NativeCrypto {
     /// Encrypts bytes with AES-128-CBC, applying PKCS#7 padding when `pkcs7` is true.
@@ -78,6 +103,7 @@ pub struct ServiceConnection {
 fn native(registry: &mut Registry) {
     registry.module::<LocalService>();
     registry.module::<NativeCrypto>();
+    registry.module::<NativeVideo>();
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +130,8 @@ impl std::fmt::Display for ServiceError {
 impl std::error::Error for ServiceError {}
 
 mod auth;
+#[cfg(target_os = "macos")]
+mod bytevc2_video;
 mod catalog;
 mod credentials;
 mod danmaku;

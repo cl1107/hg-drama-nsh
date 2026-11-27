@@ -59,7 +59,9 @@ FFmpeg 或兼容库是候选，不是假定 NSH 内置；纯 TSX 桌面子进程
 | Android | NSH 平台播放器 | 未实测；设备硬解差异、后台、存储权限 |
 | Web | 浏览器视频能力 | 未实测；CORS、Cookie、Range、自动播放、编解码与解密执行位置 |
 
-ByteVC1 在上游模型解析中归为 HEVC；仍需具体样本确认。ByteVC2 不等同 HEVC，平台默认不承诺支持；上游软件解码资产不能直接移植到 QuickJS。先向同集请求兼容 H.264/HEVC；无兼容源显示明确原因，后续解码器作为独立技术任务，不能静默播错或把加载卡住。
+ByteVC1 在上游模型解析中归为 HEVC。macOS arm64 宿主通过 libmpv 和 Librempeg 的 `bvc2` CPU 解码器直接播放 ByteVC2，并沿用原有进度、拖动和切集控件。Rust 媒体层支持 `bvc2` 的 CENC，并保留 `bv2C` 解码配置。宿主无法加载解码器时，取源层继续协商同集 H.264/HEVC。Windows 走兼容源路径。
+
+使用 `./tools/build-bytevc2-macos` 从固定版本源码构建本机解码器。`./tools/package-macos` 将本机解码器及其动态依赖放入 app。部署原生组件需要新的宿主包，TSX OTA 只能更新取源层和界面。当前发布工作流构建基础包，本机打包可附带解码器。
 
 ## 端到端验证记录格式
 

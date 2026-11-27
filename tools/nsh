@@ -5,4 +5,8 @@ mkdir -p "$TASK_ROOT/.tmp"
 if [ ! -f "$TASK_ROOT/.tmp/prepared-playback.ts" ]; then
   echo 'export const preparedPlayback = { title: "尚未准备验证媒体", mediaUrl: "" };' > "$TASK_ROOT/.tmp/prepared-playback.ts"
 fi
+local_libmpv="$TASK_ROOT/.tools/bytevc2-build/mpv-0.41/build/libmpv.2.dylib"
+if [ -z "${HG_DRAMA_LIBMPV:-}" ] && [ "$(uname -s)" = Darwin ] && [ -f "$local_libmpv" ]; then
+  export HG_DRAMA_LIBMPV="$local_libmpv"
+fi
 exec "${NSH_CLI:-"$TASK_ROOT/.tools/nsh/bin/nsh"}" "$@"

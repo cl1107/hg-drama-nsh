@@ -1,5 +1,26 @@
 # 开发交接
 
+## 2026-11-26 macOS ByteVC2 CPU 直解
+
+- 真实样本为 `bvc2` 视频轨道、`bv2C` 配置和 `cenc` 加密，Rust 媒体层已识别并保留配置。Librempeg 专用解码器完整解码同集 360p 样本的 2731 帧。macOS 系统解码器对原样本和改标签样本均无法读出画面。
+- macOS NSH 原生组件通过 libmpv 内嵌 CPU 解码，输出画面由 AppKit 显示。原有播放层继续提供 seek、暂停、静音、倍速、选集和进度。宿主先验证 `bvc2` 解码器及软件渲染能力，再启用 ByteVC2 取源；其他环境使用兼容源。
+- 《谁让这个文盲修仙的第六季》第 1 集实测取得 1080p 加密 ByteVC2。实际画面、播放进度、拖动到 30 秒和片尾结束事件均已核验。`nsh check`、`nsh build` 与全量回归通过（64 项通过，2 项在线 Rust 测试默认跳过）。
+- `./tools/build-bytevc2-macos` 构建本机解码器，`./tools/package-macos` 打包。最终本机包的 19 个动态库完成重定位，`codesign --verify --deep --strict` 通过。关闭解码器后同集备用源首次返回 HTTP 302，重试通过 HEVC 播放。Windows 仍使用 H.264/HEVC，后续覆盖有声长播和跨平台打包。
+
+## 2026-11-26 NSH 0.7.1 与第六季播放修复
+
+- 项目 CLI、`nsh-core`、桌面打包和 OTA 工作流统一升级到 `0.7.1`（`f78eace`），更新发行档 SHA-256。本机 macOS arm64 的官方发行档已校验。[NSH v0.7.1](https://github.com/longbridge/nsh/releases/tag/v0.7.1)
+- 《谁让这个文盲修仙的第六季》第 1 集在修复前以 `NO_COMPATIBLE_SOURCE` 失败。主接口返回 ByteVC2，备用接口返回 HEVC。备用模型的 `key_seed` 是 Base64，TSX 曾将编码后的字符串直接用于地址解密。现按现有 Rust 和 Node 参考实现，解码为字节后再传入地址解密函数。
+- 修复后，同一集通过备用接口取得 1080p HEVC，macOS 原生 AVPlayer 播放进度超过 2 秒。当前验收范围为第 1 集的 HEVC 回退播放。后续按需覆盖其他集和 Windows 的同路径播放。
+- 最终 `./tools/nsh check`、`./tools/nsh build` 与全量回归通过，61 项测试通过、2 项在线 Rust 测试默认跳过。
+
+## 2026-11-26 单集取源格式本机编译与播放验证
+
+- 本机 `master` 已快进到 `7ede160`，包含 OTA 构建号 14 的单集 `video_model/v1/` 取源及构建号 15 的启动更新提示。
+- macOS arm64 使用仓库固定的 NSH 0.6.1 执行 `./tools/nsh check`、`./tools/nsh build` 和 `./tools/nsh test`，61 项通过、2 项在线 Rust 测试默认跳过。现有 Rust 重复属性及未使用项警告仍在。
+- 使用真实样本《宴律，你的白月光回国了》第 1 集，正常播放链路命中 `video_model`，取得 1080p HEVC 加密源并完成下载、解密和本机播放。macOS 原生 AVPlayer 的进度事件超过 2 秒。
+- 下一步可在 Windows 实机复测同一样本，并在正式安装包中验收 OTA 启动提示。
+
 ## 2026-11-24 启动自动检查 OTA 热更新与更新提示卡片（OTA 构建号 15）
 
 1. **共享 OTA 状态模块**（[src/stores/ota.ts](../src/stores/ota.ts)）：

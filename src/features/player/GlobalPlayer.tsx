@@ -1,4 +1,4 @@
-import { signal, View, Text, Video, Image, List, Scroll, cleanup, effect, keymap, Clipboard, token, type VideoRef, type ListRef } from "nsh";
+import { signal, View, Text, Image, List, Scroll, cleanup, effect, keymap, Clipboard, token, type ListRef } from "nsh";
 import { currentWindow, isAvailable, type WindowMode } from "nsh/desktop";
 import { Button as BaseButton, Slider, Sheet, Input } from "nsh/base";
 import { Button, FilterChip } from "../../ui/controls";
@@ -8,6 +8,7 @@ import { preferences, updatePreferences, subscriptions, isFavorite, isLiked, isS
 import { servicePost } from "../../service-client";
 import { startEpisodeDownload } from "./session";
 import { createRecommendationFeed, type Recommendation, type RecommendationChannel } from "../recommend/feed";
+import { PlayerVideo, type PlayerVideoRef } from "./PlayerVideo";
 import { DanmakuLayer, DANMAKU_COLORS, resolveDanmakuFontSize } from "./DanmakuLayer";
 
 const videoFullscreen = signal(false);
@@ -31,7 +32,7 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
  const hostWindow = isAvailable ? currentWindow() : null;
  let previousWindowMode: WindowMode = "normal";
  let managedWindowFullscreen = false;
- let player: VideoRef | undefined, episodesList: ListRef | undefined, episodesViewportReady = false, pendingEpisodeCenter = false, disposed = false, lastSaved = 0, lastPlayback: Playback | null = null, ended = "", wheel = 0, lastWheel = 0;
+ let player: PlayerVideoRef | undefined, episodesList: ListRef | undefined, episodesViewportReady = false, pendingEpisodeCenter = false, disposed = false, lastSaved = 0, lastPlayback: Playback | null = null, ended = "", wheel = 0, lastWheel = 0;
  let idleTimer: ReturnType<typeof setTimeout> | undefined;
  let episodeScrollTimer: ReturnType<typeof setTimeout> | undefined;
  let lastMousePos: { x: number; y: number } | null = null;
@@ -292,7 +293,7 @@ export function GlobalPlayer(props: { recommend?: boolean; onNotify: (message: s
    if (Math.abs(wheel)>80) { lastWheel=now; const direction=wheel>0?1:-1;wheel=0;void step(direction); }
   }}>
   <If when={!!current()?.cover && !ready()}><Image src={current()?.cover ?? ""} class="absolute inset-0 opacity-25" style={{width:"100%",height:"100%",objectFit:"contain"}} /></If>
-  <If when={ready()}>{item => <Video testID="global-video" ref={node => player=node} src={item().mediaUrl} paused={paused()} muted={muted()} rate={rate()} controls={false} class="absolute inset-0" style={{width:"100%",height:"100%"}}
+  <If when={ready()}>{item => <PlayerVideo testID="global-video" codec={item().codec} ref={node => player=node} src={item().mediaUrl} paused={paused()} muted={muted()} rate={rate()} class="absolute inset-0" style={{width:"100%",height:"100%"}}
    onLoad={event => {duration.set(event.duration);failure.set("");lastPlayback=item();const initial=item().initialPositionSec;if(typeof initial === "number" && initial>0 && initial<event.duration-2)player?.seek(initial);}}
    onProgress={event => {position.set(event.currentTime);duration.set(event.duration);lastPlayback=item();if(Date.now()-lastSaved>2500){lastSaved=Date.now();flush();}}}
    onError={event => { failure.set("本集播放失败，请重试或切换短剧");paused.set(true); }}

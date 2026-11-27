@@ -21,14 +21,24 @@ const URL_KDF_SALT = Buffer.from(
   "hex",
 );
 
+test("ByteVC2 selection follows decoder availability and preserves same-quality compatible sources", () => {
+  const model = { video_list: {
+    bytevc2: { codec_type: "bytevc2", definition: "1080p", vwidth: 1080, vheight: 1920, encrypt: false, main_url: "https://v1.fqnovelvod.com/direct.mp4" },
+    hevc: { codec_type: "h265", definition: "1080p", vwidth: 1080, vheight: 1920, encrypt: false, main_url: "https://v1.fqnovelvod.com/compatible.mp4" },
+  } };
+  expect(parsePlayModelVariants(model, "1080p", true, true).map(item => item.codec)).toEqual(["bytevc2", "hevc"]);
+  expect(parsePlayModelVariants(model, "1080p", true, false).map(item => item.codec)).toEqual(["hevc"]);
+  expect(() => parsePlayModelVariants({ video_list: { bytevc2: model.video_list.bytevc2 } }, "1080p", true, false)).toThrow();
+});
+
 test("SM3 matches GB/T 32905 standard test vector for 'abc'", () => {
   expect(sm3("abc").toString("hex")).toBe(
     "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0",
   );
 });
 
-test("NativeCrypto AES-128-CBC round-trips spade URL decryption", () => {
-  const seed = "test-seed-123";
+test("parses a spade URL using the decoded key_seed bytes", () => {
+  const seed = Buffer.from("test-seed-123", "utf8");
   const plainUrl = "https://v1.fqnovelvod.com/sample/test.mp4";
   const h1 = createHash("sha512").update(seed).digest();
   const h2 = createHash("sha512").update(Buffer.concat([h1, URL_KDF_SALT])).digest();
@@ -37,6 +47,18 @@ test("NativeCrypto AES-128-CBC round-trips spade URL decryption", () => {
   );
   const envelope = Buffer.concat([Buffer.from([0xa8, 0x00, 0x01, 0x00]), encrypted]).toString("base64");
   expect(decryptSpadeUrl(envelope, seed)).toBe(plainUrl);
+  const variants = parsePlayModelVariants({
+    key_seed: seed.toString("base64"),
+    video_list: {
+      video_1: {
+        codec_type: "h265",
+        definition: "1080p",
+        encrypt: false,
+        main_url: envelope,
+      },
+    },
+  });
+  expect(variants.map(({ url, codec }) => ({ url, codec }))).toEqual([{ url: plainUrl, codec: "hevc" }]);
 });
 
 test("signPlayer and signPlaybackV5 produce valid signature headers", () => {
@@ -244,7 +266,7 @@ test("resolveEpisodeVariants prefers preload/v1 and negotiates fallback_api on b
     return { status: 200, headers: {}, body: Buffer.alloc(0) };
   };
 
-  const variants = await resolveEpisodeVariants("7503780574541122622", "auto", { transport });
+  const variants = await resolveEpisodeVariants("7503780574541122622", "auto", { transport, allowBytevc2: false });
   expect(variants.length).toBe(1);
   expect(variants[0].codec).toBe("hevc");
   expect(variants[0].url).toBe("https://v1.fqnovelvod.com/negotiated-hevc.mp4");

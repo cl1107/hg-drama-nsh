@@ -13,7 +13,7 @@ concurrency:
   group: desktop-packages-${{ github.ref }}
 
 env:
-  NSH_VERSION: '0.6.1'
+  NSH_VERSION: '0.7.1'
   RUSTUP_TOOLCHAIN: '1.97.0'
 
 jobs:
@@ -60,7 +60,7 @@ jobs:
           $archive = 'nsh-windows-x86_64.zip'
           curl.exe -fsSL --retry 3 "https://github.com/longbridge/nsh/releases/download/v$env:NSH_VERSION/$archive" -o $archive
           if ($LASTEXITCODE -ne 0) { throw "Download failed: $archive" }
-          if ((Get-FileHash $archive).Hash -ne '7952c84b165e13515bd2ad2787ef22622e49ce88cb8d877825e40b40f3aff4be') {
+          if ((Get-FileHash $archive).Hash -ne 'f09aaf5155b0c57213fbda29ce1e82cd973694d33c745f74b94a1a966a673433') {
             throw "SHA-256 mismatch: $archive"
           }
           Expand-Archive $archive "$env:GITHUB_WORKSPACE/.tools"

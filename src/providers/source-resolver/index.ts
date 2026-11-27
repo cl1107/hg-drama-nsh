@@ -2,7 +2,7 @@ import { Buffer } from "buffer";
 import { createHash } from "crypto";
 import { gzipSync } from "zlib";
 import { Storage, signal } from "nsh";
-import { NativeCrypto } from "hg-drama/native";
+import { NativeCrypto, NativeVideo } from "hg-drama/native";
 import { servicePost } from "../../service-client";
 import { clearCachedDevice, getPlaybackDevice, registerPlaybackDevice } from "./device";
 import { signPlayer } from "./signature";
@@ -566,7 +566,7 @@ export function deriveContentKeyHex(spadeA: string): string {
   return hex;
 }
 
-export function decryptSpadeUrl(encoded: string, seed: string): string {
+export function decryptSpadeUrl(encoded: string, seed: Uint8Array): string {
   const value = encoded.trim();
   if (!value) return "";
   const raw = Buffer.from(value, "base64");
@@ -598,7 +598,7 @@ export function decryptSpadeUrl(encoded: string, seed: string): string {
   return plaintext.toString("utf8");
 }
 
-function decodeCandidateUrl(candidate: string, keySeed: string): string {
+function decodeCandidateUrl(candidate: string, keySeed?: Uint8Array): string {
   if (keySeed) {
     return decryptSpadeUrl(candidate, keySeed);
   }
@@ -631,19 +631,19 @@ export function parsePlayModelVariants(
   info: Record<string, unknown>,
   requestedQuality = "auto",
   requireEncryptionMetadata = true,
+  bytevc2Available = NativeVideo.bytevc2Available(),
 ): ResolvedVariant[] {
   const videoList = info.video_list;
   if (!videoList || typeof videoList !== "object") {
     throw new SourceResolverError("MISSING_MODEL", "App 接口未返回本集片源模型");
   }
-  const keySeed = str(info.key_seed);
   const rawItems = Object.values(videoList as Record<string, unknown>).filter(
     (item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)),
   );
 
   interface CandidateRow {
     item: Record<string, unknown>;
-    codec: "h264" | "hevc";
+    codec: ResolvedVariant["codec"];
     codecRank: number;
     quality: string;
     pixels: number;
@@ -656,7 +656,7 @@ export function parsePlayModelVariants(
       ? item.video_meta
       : {}) as Record<string, unknown>;
     const rawCodec = str(item.codec_type || meta.codec_type).toLowerCase();
-    let codec: "h264" | "hevc" | null = null;
+    let codec: ResolvedVariant["codec"] | null = null;
     let codecRank = 9;
     if (["h264", "avc", "avc1"].includes(rawCodec)) {
       codec = "h264";
@@ -666,6 +666,10 @@ export function parsePlayModelVariants(
       codecRank = 1;
     } else if (rawCodec === "bytevc2") {
       sawBytevc2 = true;
+      if (bytevc2Available) {
+        codec = "bytevc2";
+        codecRank = -1;
+      }
     }
     if (!codec) continue;
     const dims = [
@@ -694,6 +698,16 @@ export function parsePlayModelVariants(
         ? "本集仅提供播放器不支持的 ByteVC2 编码，当前无法播放或下载"
         : "本集没有兼容 H.264/HEVC 片源",
     );
+  }
+
+  const encodedSeed = str(info.key_seed);
+  let keySeed: Uint8Array | undefined;
+  if (encodedSeed) {
+    try {
+      keySeed = Buffer.from(encodedSeed.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+    } catch {
+      throw new SourceResolverError("INVALID_RESPONSE", "片源地址密钥种子编码无效");
+    }
   }
 
   const bestPixels = filtered[0].pixels;
@@ -873,6 +887,7 @@ async function resolveFallbackCodecVariants(
   quality: string,
   transport: UpstreamTransport,
   signal?: AbortSignal,
+  bytevc2Available = NativeVideo.bytevc2Available(),
 ): Promise<ResolvedVariant[] | null> {
   const rawFallback = parseFallbackApiUrl(model.fallback_api);
   if (!rawFallback) return null;
@@ -908,7 +923,7 @@ async function resolveFallbackCodecVariants(
           ? (videoInfo.data as Record<string, unknown>)
           : undefined;
       if (!data) continue;
-      const variants = parsePlayModelVariants(data, quality, false);
+      const variants = parsePlayModelVariants(data, quality, false, bytevc2Available);
       if (variants.length > 0) return variants;
     } catch (err) {
       if (isAbortError(err)) throw err;
@@ -1060,10 +1075,11 @@ function buildStrategyWaves(active: PlaybackStrategy): {
 export async function resolveEpisodeVariants(
   episodeId: string,
   quality = "auto",
-  options?: { signal?: AbortSignal; transport?: UpstreamTransport },
+  options?: { signal?: AbortSignal; transport?: UpstreamTransport; allowBytevc2?: boolean },
 ): Promise<ResolvedVariant[]> {
   const signal = options?.signal;
   const transport = options?.transport ?? defaultUpstreamTransport;
+  const bytevc2Available = options?.allowBytevc2 !== false && NativeVideo.bytevc2Available();
   throwIfAborted(signal);
   if (!/^\d{1,30}$/.test(episodeId)) {
     throw new SourceResolverError("INVALID_REQUEST", "分集编号无效");
@@ -1110,13 +1126,13 @@ export async function resolveEpisodeVariants(
     const response = await requestJson(transport, req, subSignal);
     const model = extractVideoModel(response, episodeId, strategy.mode === "video_model");
     try {
-      return parsePlayModelVariants(model, quality, true);
+      return parsePlayModelVariants(model, quality, true, bytevc2Available);
     } catch (err) {
       if (
         err instanceof SourceResolverError &&
         (err.code === "NO_COMPATIBLE_SOURCE" || err.code === "MISSING_MODEL" || err.incompleteEncryptionMetadata)
       ) {
-        const negotiated = await resolveFallbackCodecVariants(model, quality, transport, subSignal);
+        const negotiated = await resolveFallbackCodecVariants(model, quality, transport, subSignal, bytevc2Available);
         if (negotiated && negotiated.length > 0) return negotiated;
       }
       throw err;

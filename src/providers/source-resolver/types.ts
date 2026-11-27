@@ -1,6 +1,6 @@
 export interface ResolvedVariant {
   url: string;
-  codec: "h264" | "hevc";
+  codec: "h264" | "hevc" | "bytevc2";
   quality: string;
   userAgent: string;
   contentKey?: string;

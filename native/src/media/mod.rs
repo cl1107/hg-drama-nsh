@@ -157,27 +157,31 @@ impl TryFrom<SourceVariant> for Variant {
     }
 }
 
-/// Orders variants within the selected quality tier, preferring H.264 for
-/// platform compatibility and retaining HEVC as a fallback.
+fn codec_rank(codec: &str) -> Option<u8> {
+    match codec {
+        "h264" => Some(0),
+        "hevc" => Some(1),
+        "bytevc2" => Some(2),
+        _ => None,
+    }
+}
+
+/// Orders variants within the selected quality tier, preferring codecs the
+/// platform player can decode before the application software decoder.
 pub(crate) fn order_variants(
     variants: impl IntoIterator<Item = Variant>,
     quality: &str,
 ) -> Result<Vec<Variant>, ServiceError> {
     let mut compatible: Vec<Variant> = variants
         .into_iter()
-        .filter(|variant| matches!(variant.codec.as_str(), "h264" | "hevc"))
+        .filter(|variant| codec_rank(&variant.codec).is_some())
         .filter(|variant| quality == "auto" || variant.quality == quality)
         .collect();
-    compatible.sort_by_key(|variant| {
-        (
-            if variant.codec == "h264" { 0_u8 } else { 1_u8 },
-            variant.quality.clone(),
-        )
-    });
+    compatible.sort_by_key(|variant| (codec_rank(&variant.codec), variant.quality.clone()));
     if compatible.is_empty() {
         return Err(ServiceError::new(
             "NO_COMPATIBLE_SOURCE",
-            "本集没有兼容 H.264/HEVC 片源",
+            "本集没有当前画质的可播放片源",
         ));
     }
     Ok(compatible)
@@ -1060,20 +1064,13 @@ pub(crate) async fn download_from_variants(
     ordered: &[Variant],
 ) -> Result<(Variant, Vec<u8>), ServiceError> {
     let client = crate::transport::client()?.clone();
-    let groups = [
-        ordered
-            .iter()
-            .filter(|variant| variant.codec == "h264")
-            .cloned()
-            .collect::<Vec<_>>(),
-        ordered
-            .iter()
-            .filter(|variant| variant.codec != "h264")
-            .cloned()
-            .collect::<Vec<_>>(),
-    ];
     let mut last_error = None;
-    for group in groups {
+    for codec in ["h264", "hevc", "bytevc2"] {
+        let group: Vec<_> = ordered
+            .iter()
+            .filter(|variant| variant.codec == codec)
+            .cloned()
+            .collect();
         let mut offset = 0;
         while offset < group.len() {
             let batch_len = if offset == 0 { 2 } else { 1 }.min(group.len() - offset);
@@ -1108,7 +1105,10 @@ pub(crate) async fn prepare_from_variants(
     variants: impl IntoIterator<Item = Variant>,
     quality: &str,
 ) -> Result<Prepared, ServiceError> {
-    let ordered = order_variants(variants, quality)?;
+    let supported = variants
+        .into_iter()
+        .filter(|variant| variant.codec != "bytevc2" || crate::NativeVideo::bytevc2_available());
+    let ordered = order_variants(supported, quality)?;
     let (variant, raw) = download_from_variants(&ordered).await?;
     let data = match variant.content_key {
         Some(key) => tokio::task::spawn_blocking(move || decrypt_mp4_buffer(&raw, &key))
@@ -1143,7 +1143,7 @@ mod tests {
     }
 
     #[test]
-    fn orders_h264_before_hevc_and_filters_quality() {
+    fn prefers_platform_decoders_and_filters_quality() {
         let variants = order_variants(
             [
                 variant("hevc", "720p"),
@@ -1159,15 +1159,15 @@ mod tests {
                 .iter()
                 .map(|variant| variant.codec.as_str())
                 .collect::<Vec<_>>(),
-            ["h264", "hevc"]
+            ["h264", "hevc", "bytevc2"]
         );
     }
 
     #[test]
     fn rejects_when_no_compatible_quality_exists() {
-        let error =
-            order_variants([variant("bytevc2", "1080p")], "auto").expect_err("must reject bytevc2");
-        assert_eq!(error.to_string(), "本集没有兼容 H.264/HEVC 片源");
+        let error = order_variants([variant("hevc", "1080p")], "720p")
+            .expect_err("must preserve the requested quality");
+        assert_eq!(error.to_string(), "本集没有当前画质的可播放片源");
     }
 
     #[test]

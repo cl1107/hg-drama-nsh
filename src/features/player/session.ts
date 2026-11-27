@@ -1,4 +1,5 @@
 import { signal } from "nsh";
+import { NativeVideo } from "hg-drama/native";
 import { serviceConfig, servicePost } from "../../service-client";
 import type { QualityOption } from "../../stores/user-data";
 import {
@@ -19,7 +20,7 @@ export interface Playback {
   intro?: string;
   episode: Episode;
   episodes: Episode[];
-  codec: string;
+  codec: ResolvedVariant["codec"];
   quality: string;
   encrypted: boolean;
   mediaUrl: string;
@@ -206,11 +207,14 @@ export function parsePlayback(value: unknown, baseUrl: string, seriesId: string,
     !Array.isArray(row.episodes) ||
     typeof row.mediaUrl !== "string" ||
     typeof row.codec !== "string" ||
-    !["h264", "hevc"].includes(row.codec) ||
+    (row.codec !== "h264" && row.codec !== "hevc" && row.codec !== "bytevc2") ||
     typeof row.quality !== "string" ||
     typeof row.encrypted !== "boolean"
   ) {
     throw new Error("播放信息不完整或集数不匹配");
+  }
+  if (row.codec === "bytevc2" && !NativeVideo.bytevc2Available()) {
+    throw new Error("当前设备未提供 ByteVC2 解码器，请选择兼容片源");
   }
   const episodes = row.episodes.map(episode),
     url = new URL(row.mediaUrl),

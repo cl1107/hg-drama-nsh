@@ -22,7 +22,7 @@ concurrency:
   group: ota-package-${{ github.ref }}
 
 env:
-  NSH_VERSION: '0.6.1'
+  NSH_VERSION: '0.7.1'
   RUSTUP_TOOLCHAIN: '1.97.0'
 
 jobs:
@@ -46,7 +46,7 @@ jobs:
           archive=nsh-linux-x86_64.tar.gz
           curl -fsSL --retry 3 "https://github.com/longbridge/nsh/releases/download/v${NSH_VERSION}/$archive" -o "$archive"
           sha256sum -c <<EOF
-          9a7ac692f1c229df476be8ff83a3c5912d271453b644e313f02cb19d18696070  $archive
+          04457ad3a53c91b66efcee537968c5af7c90df25cf61c18d51135ecc051e22b3  $archive
           EOF
           tar -xzf "$archive" -C "$GITHUB_WORKSPACE/.tools"
 

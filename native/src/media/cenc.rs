@@ -220,15 +220,13 @@ fn parse_protection(data: &[u8], stsd: BoxInfo) -> Result<Option<Protection>> {
     let mut original = [0_u8; 4];
     original.copy_from_slice(&data[frma.payload..frma.end]);
     if entry.typ == encv {
-        let supported = [*b"avc1", *b"avc3", *b"hvc1", *b"hev1"];
-        if !supported.iter().any(|value| value == &original) {
-            return Err(error("不支持该加密视频编码"));
-        }
-        if original == *b"avc1" || original == *b"avc3" {
-            one(&children, b"avcC")?;
-        } else {
-            one(&children, b"hvcC")?;
-        }
+        let config = match &original {
+            b"avc1" | b"avc3" => b"avcC",
+            b"hvc1" | b"hev1" => b"hvcC",
+            b"bvc2" => b"bv2C",
+            _ => return Err(error("不支持该加密视频编码")),
+        };
+        one(&children, config)?;
     } else if original != *b"mp4a" {
         return Err(error("不支持该加密音频编码"));
     }
@@ -720,5 +718,21 @@ mod tests {
         let (input, _, _) = encrypted_fixture(8, true, false, b"cenc");
         let fragmented = [input, box_(b"moof", &[])].concat();
         assert!(decrypt_mp4_buffer(&fragmented, &KEY).is_err());
+    }
+
+    #[test]
+    fn decrypts_bytevc2_and_preserves_its_decoder_config() {
+        let (mut input, clear, data_offset) = encrypted_fixture(8, true, false, b"cenc");
+        let original = input.windows(4).position(|part| part == b"avc1").unwrap();
+        let config = input.windows(4).position(|part| part == b"avcC").unwrap();
+        input[original..original + 4].copy_from_slice(b"bvc2");
+        assert!(decrypt_mp4_buffer(&input, &KEY).is_err());
+        input[config..config + 4].copy_from_slice(b"bv2C");
+
+        let result = decrypt_mp4_buffer(&input, &KEY).expect("ByteVC2 fixture decrypts");
+        assert_eq!(&result[data_offset..], &clear);
+        assert_eq!(&result[config..config + 7], b"bv2C\x01\x02\x03");
+        assert!(!result.windows(4).any(|part| part == b"encv"));
+        assert!(result.windows(4).any(|part| part == b"bvc2"));
     }
 }

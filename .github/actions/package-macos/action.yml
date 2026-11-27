@@ -12,7 +12,7 @@ runs:
         archive=nsh-macos-arm64.tar.gz
         curl -fsSL --retry 3 "https://github.com/longbridge/nsh/releases/download/v${NSH_VERSION}/$archive" -o "$archive"
         shasum -a 256 -c <<EOF
-        ee1aed2a4d111fe90e6cceca4b9d5f834c9e11cfda525f8be984261a329c06de  $archive
+        28e349b59c0b46e964010c8f858a78af5db4d26012d213c03d15ce28ddff0650  $archive
         EOF
         tar -xzf "$archive" -C "$GITHUB_WORKSPACE/.tools"
 

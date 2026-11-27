@@ -1,0 +1,69 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+build="$root/.tools/bytevc2-build"
+prefix="$build/prefix"
+librempeg_revision=cb1f8f3eef84999e61b27e2d44664858179bc240
+mpv_version=0.41.0
+libmpv="$build/mpv-0.41/build/libmpv.2.dylib"
+
+if [ "$(uname -s):$(uname -m)" != Darwin:arm64 ]; then
+  echo "ByteVC2 解码器当前只构建 macOS arm64" >&2
+  exit 1
+fi
+if ! pkg-config --exists 'libplacebo >= 6.338.2' 'libass >= 0.12.2' 'libswresample >= 7'; then
+  echo "构建需要 pkg-config 可见的 libplacebo、libass 和 FFmpeg 9 libswresample" >&2
+  exit 1
+fi
+mkdir -p "$build"
+
+unpack_source() {
+  url=$1 archive=$2 checksum=$3 destination=$4
+  if [ ! -f "$archive" ]; then
+    curl -fLsS --retry 2 "$url" -o "$archive.download"
+    mv "$archive.download" "$archive"
+  fi
+  printf '%s  %s\n' "$checksum" "$archive" | shasum -a 256 -c >&2
+  if [ ! -f "$destination/.hg-verified-source" ]; then
+    mkdir -p "$destination"
+    tar -xzf "$archive" -C "$destination" --strip-components=1
+    touch "$destination/.hg-verified-source"
+  fi
+}
+
+unpack_source "https://codeload.github.com/librempeg/librempeg/tar.gz/$librempeg_revision" \
+  "$build/librempeg-$librempeg_revision.tar.gz" \
+  fd965e6ef9f745af96142cf118d7c2aa0dce906225c9d3cd2ef19e0221723813 "$build/librempeg-src"
+unpack_source "https://codeload.github.com/mpv-player/mpv/tar.gz/refs/tags/v$mpv_version" \
+  "$build/mpv-v$mpv_version.tar.gz" \
+  ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209 "$build/mpv-0.41"
+
+if [ ! -x "$build/venv/bin/meson" ] || [ ! -x "$build/venv/bin/ninja" ]; then
+  python3 -m venv "$build/venv"
+  "$build/venv/bin/python" -m pip install meson==1.12.1 ninja==1.13.0 >&2
+fi
+export PATH="$build/venv/bin:$PATH"
+export PKG_CONFIG_PATH="$prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+mkdir -p "$build/librempeg-build"
+cd "$build/librempeg-build"
+"$build/librempeg-src/configure" --prefix="$prefix" \
+  --enable-pic --disable-everything --disable-autodetect --disable-doc --disable-debug \
+  --disable-programs --enable-decoder=bvc2,vvc,aac --enable-demuxer=mov \
+  --enable-protocol=file,http,tcp \
+  --enable-filter=abuffer,abuffersink,anull,aresample,asetrate,atempo,buffer,buffersink,format,hwdownload,null,scale,transpose >&2
+make -j 4 >&2
+make install >&2
+
+cd "$build/mpv-0.41"
+set --
+if [ -f build/meson-private/coredata.dat ]; then
+  set -- --reconfigure
+fi
+meson setup "$@" build --prefix "$prefix" --buildtype=release --auto-features=disabled \
+  -Dlibmpv=true -Dcplayer=false -Dcoreaudio=enabled -Dgl=disabled \
+  -Dcocoa=enabled -Dswift-build=enabled -Dgpl=false >&2
+meson compile -C build -j 4 >&2
+python3 -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1])' "$libmpv"
+printf '%s\n' "$libmpv"

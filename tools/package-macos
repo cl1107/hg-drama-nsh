@@ -24,6 +24,14 @@ cp "$nsh_home/LICENSE-APACHE" "$resources/licenses/NSH-LICENSE-APACHE"
 cp service/vendor/hongguo/LICENSE service/vendor/hongguo/NOTICE \
   service/vendor/hongguo/THIRD-PARTY-NOTICES.md "$resources/licenses/hongguo/"
 
+libmpv=${HG_DRAMA_LIBMPV:-"$root/.tools/bytevc2-build/mpv-0.41/build/libmpv.2.dylib"}
+if [ -n "${HG_DRAMA_LIBMPV:-}" ] || [ -f "$libmpv" ]; then
+  python3 "$root/tools/bundle-bytevc2-macos.py" "$libmpv" "$app/Contents/Frameworks"
+  cp "$root/.tools/bytevc2-build/mpv-0.41/Copyright" "$resources/licenses/MPV-Copyright"
+  cp "$root/.tools/bytevc2-build/mpv-0.41/LICENSE.LGPL" "$resources/licenses/MPV-LICENSE-LGPL"
+  cp "$root/.tools/bytevc2-build/librempeg-src/COPYING.LGPLv2.1" "$resources/licenses/Librempeg-LICENSE-LGPL2.1"
+fi
+
 test ! -e "$app/Contents/MacOS/node"
 test ! -e "$resources/backend"
 codesign --force --sign - "$app"
